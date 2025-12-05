@@ -571,7 +571,44 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, va
             except Exception as e:
                 logger.debug(f"Known vault query also failed: {e}")
         
-        # If no vaults found via vaultLens, try accountLens as fallback
+        # If no vaults found via vaultLens, try querying known vaults directly
+        # This is a fallback if getAccountVaults doesn't work
+        if not vaults:
+            logger.debug("Trying to query known Euler vaults directly")
+            # Known vault from user's URL - we can expand this list
+            known_vaults_to_check = [
+                '0x28bD4F19C812CBF9e33A206f87125f14E65dc8aA',  # From user's URL
+                # Add more known vaults here as discovered
+            ]
+            
+            for vault_addr in known_vaults_to_check:
+                try:
+                    position_data = vault_lens_contract.functions.getVaultPosition(
+                        address_checksum,
+                        vault_addr
+                    ).call()
+                    
+                    health_factor_raw = position_data[0]
+                    collateral_value_raw = position_data[1]
+                    debt_value_raw = position_data[2]
+                    
+                    health_factor = health_factor_raw / 1e18
+                    collateral_usd = collateral_value_raw / 1e18
+                    debt_usd = debt_value_raw / 1e18
+                    
+                    if health_factor <= 1e10 and debt_usd > 0:
+                        vaults.append({
+                            'vault_address': vault_addr,
+                            'health_factor': health_factor,
+                            'collateral_usd': collateral_usd,
+                            'debt_usd': debt_usd
+                        })
+                        logger.info(f"Found Euler vault via direct query: {vault_addr}, hf={health_factor:.3f}")
+                except Exception as e:
+                    logger.debug(f"Known vault {vault_addr} query failed: {e}")
+                    continue
+        
+        # Last fallback: try accountLens for account-level health (no vault info)
         if not vaults and account_lens_address:
             try:
                 account_lens_abi = [
@@ -597,6 +634,7 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, va
                         'collateral_usd': 0,
                         'debt_usd': 0
                     })
+                    logger.info(f"Found Euler position via accountLens fallback: hf={health_factor:.3f}")
             except Exception as e:
                 logger.debug(f"Fallback to accountLens also failed: {e}")
         

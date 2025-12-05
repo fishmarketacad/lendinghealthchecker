@@ -7,8 +7,13 @@ import json
 from dotenv import load_dotenv
 import asyncio
 from typing import Optional, List, Dict
+from time import time
 import protocols
 import rebalancing
+
+# Unique instance identifier to track duplicate instances
+import socket
+INSTANCE_ID = f"{socket.gethostname()}-{os.getpid()}"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -62,11 +67,21 @@ PROTOCOL_CONFIG = {
         'health_factor_index': None,  # Will need custom parsing
         'health_factor_divisor': 1e18,
         'abi': protocols.load_abi('curvance')
+    },
+    'euler': {
+        'name': 'Euler',
+        'chain': 'Monad',
+        'chain_id': 143,
+        'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
+        # accountLens contract address on Monad (view-only helper for account data)
+        'pool_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
+        'app_url': 'https://app.euler.finance',
+        'explorer_url': 'https://monadvision.com',
+        'health_factor_method': 'getAccountHealth',  # Custom method in protocols.py
+        'health_factor_index': None,  # Will need custom parsing
+        'health_factor_divisor': 1e18,
+        'abi': protocols.load_abi('euler')  # Will create minimal ABI
     }
-    # Future protocols can be added here:
-    # 'aave': { ... },
-    # 'euler': { ... },
-    # etc.
 }
 
 # Default protocol
@@ -117,23 +132,36 @@ def load_user_data():
 
 # Migrate old data format to new format (supports multiple addresses)
 def migrate_user_data(data):
-    """Migrate old single-address format to new multi-address format"""
+    """
+    Migrate old data format to new hierarchical format.
+    Preserves new format data, migrates old format if needed.
+    """
+    if not data:
+        return {}
+    
     migrated = {}
     for chat_id, user_info in data.items():
-        # Check if it's old format (has 'address' key)
-        if 'address' in user_info:
+        # Check if it's already new format (has 'addresses' key with dict structure)
+        if 'addresses' in user_info and isinstance(user_info['addresses'], dict):
+            # Already new format - preserve it
+            migrated[chat_id] = user_info
+        elif 'address' in user_info:
             # Old format: {'threshold': 1.5, 'address': '0x...'}
+            # Convert to new format
             threshold = user_info.get('threshold', 1.5)
             address = user_info['address']
             migrated[chat_id] = {
-                'default_threshold': threshold,
                 'addresses': {
-                    address: {'threshold': threshold}
+                    address: {
+                        'default_threshold': threshold,
+                        'protocols': {}
+                    }
                 }
             }
         else:
-            # Already new format
+            # Unknown format - preserve as-is to avoid data loss
             migrated[chat_id] = user_info
+    
     return migrated
 
 # Save user data to file
@@ -143,6 +171,100 @@ def save_user_data(data):
 
 # Global variable to store user data
 user_data = load_user_data()
+
+# Cache for API calls (30 second TTL to balance accuracy vs API calls)
+_cache = {}
+CACHE_TTL = 30  # seconds
+
+def get_cached_or_fetch(cache_key: str, fetch_func, *args, **kwargs):
+    """
+    Get from cache if valid, otherwise fetch and cache.
+    
+    Args:
+        cache_key: Unique cache key
+        fetch_func: Function to call if cache miss
+        *args, **kwargs: Arguments to pass to fetch_func
+    
+    Returns:
+        Cached or freshly fetched value
+    """
+    if cache_key in _cache:
+        value, timestamp = _cache[cache_key]
+        if time() - timestamp < CACHE_TTL:
+            logger.debug(f"Cache hit for {cache_key}")
+            return value
+    
+    # Fetch fresh data
+    logger.debug(f"Cache miss for {cache_key}, fetching fresh data")
+    value = fetch_func(*args, **kwargs)
+    _cache[cache_key] = (value, time())
+    return value
+
+def is_valid_position(health_factor: Optional[float], borrow_amount: Optional[float] = None) -> bool:
+    """
+    Filter out invalid/closed positions.
+    
+    Args:
+        health_factor: Health factor value
+        borrow_amount: Borrowed amount (optional, for filtering supply-only positions)
+    
+    Returns:
+        True if position is valid and active
+    """
+    # Filter None values
+    if health_factor is None:
+        return False
+    
+    # Filter max uint256 values (closed positions return max value)
+    # Max uint256 is ~1.15e77, we use 1e10 as a reasonable upper bound
+    if health_factor > 1e10:
+        logger.debug(f"Filtered invalid position with health_factor: {health_factor}")
+        return False
+    
+    # Filter positions with no debt (supply-only, no liquidation risk)
+    if borrow_amount is not None:
+        try:
+            borrow_float = float(borrow_amount)
+            if borrow_float == 0:
+                logger.debug("Filtered supply-only position (no debt)")
+                return False
+        except (ValueError, TypeError):
+            pass
+    
+    return True
+
+def get_threshold_for_position(chat_id: str, address: str, protocol_id: str, market_id: Optional[str] = None) -> float:
+    """
+    Get threshold for a position using hierarchy:
+    Market-specific > Protocol-specific > Global default
+    
+    Args:
+        chat_id: Chat ID
+        address: Wallet address
+        protocol_id: Protocol identifier
+        market_id: Market identifier (optional)
+    
+    Returns:
+        Threshold value (defaults to 1.5 if not found)
+    """
+    if chat_id not in user_data:
+        return 1.5
+    
+    address_data = user_data[chat_id].get('addresses', {}).get(address, {})
+    
+    # Check market-specific first
+    if market_id:
+        market_threshold = address_data.get('protocols', {}).get(protocol_id, {}).get('markets', {}).get(market_id, {}).get('threshold')
+        if market_threshold:
+            return float(market_threshold)
+    
+    # Check protocol-specific
+    protocol_threshold = address_data.get('protocols', {}).get(protocol_id, {}).get('threshold')
+    if protocol_threshold:
+        return float(protocol_threshold)
+    
+    # Fall back to global default
+    return float(address_data.get('default_threshold', 1.5))
 
 # Function to check health factor for a specific protocol
 def check_health_factor(address, protocol_id='neverland'):
@@ -182,6 +304,9 @@ def check_health_factor(address, protocol_id='neverland'):
             # If not found, will query Central Registry for all MarketManagers
             market_manager = None  # Will be passed from user data in check function
             return protocols.check_curvance_health_factor(address, contract, conn['w3'], market_manager, None)  # None = use Central Registry
+        
+        elif protocol_id == 'euler':
+            return protocols.check_euler_health_factor(address, contract, conn['w3'])
         
         else:
             # Generic fallback - try calling the method directly
@@ -230,17 +355,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Supported Protocols:\n" + protocols_list + "\n\n"
         "Here are the available commands:\n"
         "/start - Show this help message\n"
-        "/add <protocol> <threshold> <address> [market_id] - Add an address to monitor\n"
-        "  Example: /add neverland 1.5 0x1234...\n"
-        "  Example: /add morpho 1.5 0x1234...\n"
-        "  Example: /add morpho 1.5 0x1234... 0xMarketID (Morpho requires market ID)\n"
+        "/add <address> <threshold> - Set global threshold (monitors all protocols)\n"
+        "/add <address> <threshold> <protocol> - Set protocol-specific threshold\n"
+        "/add <address> <threshold> <protocol> <market> - Set market-specific threshold\n"
+        "  Examples:\n"
+        "    /add 0x1234... 1.5\n"
+        "    /add 0x1234... 1.3 morpho\n"
+        "    /add 0x1234... 1.2 morpho 0xMarketID\n"
         "/list - List all addresses you're monitoring\n"
-        "/check - Check health factors for all monitored addresses\n"
+        "/check - Auto-discover and check all positions across all protocols\n"
         "/repay - Get rebalancing suggestions (withdraw from vaults & repay loans)\n"
         "/remove <address> - Remove an address from monitoring\n"
         "/stop - Stop monitoring all addresses\n"
         "/protocols - List all supported protocols\n\n"
-        "You can also simply paste an address to check its health factor (will try all protocols).\n\n"
+        "The bot automatically discovers all your positions across all protocols!\n\n"
         "DISCLAIMER: This bot is not officially affiliated with or endorsed by any protocol. "
         "It is an independent tool created for informational purposes only. "
         "The bot is not guaranteed to be always accurate or available. "
@@ -249,443 +377,824 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # Function to handle /add command (adds an address to monitor)
 async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Support multiple formats:
-    # Old: /add <threshold> <address> (defaults to neverland)
-    # New: /add <protocol> <threshold> <address>
-    # Morpho: /add morpho <threshold> <address> [market_id] (optional market ID)
-    if len(context.args) == 2:
-        # Old format: /add <threshold> <address> - default to neverland
-        protocol_id = DEFAULT_PROTOCOL
-        threshold = context.args[0]
-        address = context.args[1]
-        market_id = None
-    elif len(context.args) == 3:
-        # New format: /add <protocol> <threshold> <address>
-        protocol_id = context.args[0].lower()
-        threshold = context.args[1]
-        address = context.args[2]
-        market_id = None
-    elif len(context.args) == 4:
-        # Protocol with optional market/market_manager ID: /add <protocol> <threshold> <address> <market_id>
-        protocol_id = context.args[0].lower()
-        threshold = context.args[1]
-        address = context.args[2]
-        if protocol_id == 'morpho':
-            market_id = context.args[3]
-        elif protocol_id == 'curvance':
-            market_id = context.args[3]  # For Curvance, this is market_manager_address (required)
-        else:
-            market_id = None
-    else:
+    """
+    Add address to monitor with hierarchical threshold support:
+    - /add <address> <threshold> - Global threshold for all protocols
+    - /add <address> <threshold> <protocol> - Protocol-specific threshold
+    - /add <address> <threshold> <protocol> <market> - Market-specific threshold
+    """
+    chat_id = str(update.effective_chat.id)
+    
+    # Parse arguments
+    if len(context.args) < 2:
         await update.message.reply_text(
-            "Usage: /add <protocol> <threshold> <address> [market_id]\n"
-            "Example: /add neverland 1.5 0x1234...\n"
-            "Example: /add morpho 1.5 0x1234...\n"
-            "Example: /add morpho 1.5 0x1234... 0xMarketID (optional for Morpho)\n"
-            "Example: /add curvance 1.5 0x1234... 0xMarketManagerAddress (REQUIRED for Curvance)\n\n"
+            "Usage:\n"
+            "  /add <address> <threshold> - Set global threshold for all protocols\n"
+            "  /add <address> <threshold> <protocol> - Set threshold for specific protocol\n"
+            "  /add <address> <threshold> <protocol> <market> - Set threshold for specific market\n\n"
+            "Examples:\n"
+            "  /add 0x1234... 1.5\n"
+            "  /add 0x1234... 1.3 morpho\n"
+            "  /add 0x1234... 1.2 morpho 0xMarketID\n"
+            "  /add 0x1234... 1.4 curvance 0xMarketManager\n\n"
             f"Supported protocols: {', '.join(PROTOCOL_CONFIG.keys())}"
         )
         return
     
-    # For Curvance, MarketManager address is required
-    if protocol_id == 'curvance' and len(context.args) < 4:
-        await update.message.reply_text(
-            "⚠️ Curvance requires a MarketManager address.\n"
-            "Usage: /add curvance <threshold> <address> <market_manager_address>\n"
-            "Example: /add curvance 1.5 0x1234... 0xd6365555f6a697C7C295bA741100AA644cE28545\n\n"
-            "You can find MarketManager addresses in Curvance's documentation."
-        )
+    address = context.args[0].lower()
+    threshold_str = context.args[1]
+    protocol_id = context.args[2].lower() if len(context.args) >= 3 else None
+    market_id = context.args[3].lower() if len(context.args) >= 4 else None
+    
+    # Validate threshold
+    try:
+        threshold = float(threshold_str)
+        if threshold <= 0:
+            raise ValueError("Threshold must be positive")
+    except ValueError:
+        await update.message.reply_text("Invalid threshold. Please enter a positive number (e.g., 1.5).")
         return
-
-    # Validate protocol
-    if protocol_id not in PROTOCOL_CONFIG:
+    
+    # Validate address (use any protocol's Web3 instance)
+    if not protocol_connections:
+        await update.message.reply_text("Error: No protocol connections available.")
+        return
+    
+    # Use first available protocol to validate address
+    first_protocol = list(protocol_connections.values())[0]
+    if not first_protocol['w3'].is_address(address):
+        await update.message.reply_text("Invalid address format. Please try again.")
+        return
+    
+    # Validate protocol if specified
+    if protocol_id and protocol_id not in PROTOCOL_CONFIG:
         await update.message.reply_text(
             f"Unknown protocol: {protocol_id}\n"
             f"Supported protocols: {', '.join(PROTOCOL_CONFIG.keys())}"
         )
         return
-
-    chat_id = str(update.effective_chat.id)
-    protocol_info = PROTOCOL_CONFIG[protocol_id]
     
-    try:
-        threshold = float(threshold)
-        address = address.lower()  # Normalize to lowercase
-    except ValueError:
-        await update.message.reply_text("Invalid threshold. Please enter a number (e.g., 1.5).")
-        return
-
-    # Validate address using the protocol's Web3 instance
-    conn = protocol_connections[protocol_id]
-    if not conn['w3'].is_address(address):
-        await update.message.reply_text(f"Invalid {protocol_info['chain']} address. Please try again.")
-        return
-
-    # Initialize user data if needed
-    if chat_id not in user_data:
-        user_data[chat_id] = {
-            'default_threshold': threshold,
-            'addresses': {}
-        }
-
-    # Create unique key: address + protocol (+ market_id for Morpho, + market_manager for Curvance)
-    if protocol_id == 'morpho' and market_id:
-        address_key = f"{address}:{protocol_id}:{market_id.lower()}"
-    elif protocol_id == 'curvance':
-        # Curvance requires MarketManager address
-        if not market_id:
-            await update.message.reply_text(
-                "⚠️ Curvance requires a MarketManager address.\n"
-                "Usage: /add curvance <threshold> <address> <market_manager_address>\n"
-                "Example: /add curvance 1.5 0x1234... 0xd6365555f6a697C7C295bA741100AA644cE28545"
-            )
-            return
-        address_key = f"{address}:{protocol_id}:{market_id.lower()}"
-    else:
-        address_key = f"{address}:{protocol_id}"
-    
-    # Add or update address
-    if address_key in user_data[chat_id]['addresses']:
-        user_data[chat_id]['addresses'][address_key]['threshold'] = threshold
-        message = f"✅ Updated threshold for {address} on {protocol_info['name']} to {threshold}"
-    else:
-        address_data = {
-            'threshold': threshold,
-            'protocol': protocol_id,
-            'address': address
-        }
-        if protocol_id == 'morpho' and market_id:
-            # Validate market ID format (should be bytes32 = 66 chars: 0x + 64 hex)
-            market_id_lower = market_id.lower()
-            if not market_id_lower.startswith('0x') or len(market_id_lower) != 66:
+    # Validate market ID format if provided
+    if market_id:
+        if protocol_id == 'morpho':
+            # Morpho market ID should be bytes32 (66 chars: 0x + 64 hex)
+            if not market_id.startswith('0x') or len(market_id) != 66:
                 await update.message.reply_text(
-                    f"⚠️ Invalid market ID format: {market_id}\n"
+                    f"⚠️ Invalid Morpho market ID format: {market_id}\n"
                     "Market ID should be 66 characters (0x + 64 hex chars).\n"
-                    "Example: 0x409f2824aee2d8391d4a5924935e13312e157055e262b923b60c9dcb47e6311d\n\n"
-                    "You can find market IDs from Morpho app URLs or use /add without market ID to auto-discover."
+                    "Example: 0x409f2824aee2d8391d4a5924935e13312e157055e262b923b60c9dcb47e6311d"
                 )
                 return
-            address_data['market_id'] = market_id_lower
         elif protocol_id == 'curvance':
-            # Curvance requires MarketManager address
-            if not market_id:
+            # Curvance MarketManager should be address (42 chars: 0x + 40 hex)
+            if not market_id.startswith('0x') or len(market_id) != 42:
                 await update.message.reply_text(
-                    "⚠️ Curvance requires a MarketManager address.\n"
-                    "Usage: /add curvance <threshold> <address> <market_manager_address>\n"
-                    "Example: /add curvance 1.5 0x1234... 0xd6365555f6a697C7C295bA741100AA644cE28545"
-                )
-                return
-            # Validate MarketManager address format
-            market_manager_lower = market_id.lower()
-            if not market_manager_lower.startswith('0x') or len(market_manager_lower) != 42:
-                await update.message.reply_text(
-                    f"⚠️ Invalid MarketManager address format: {market_id}\n"
+                    f"⚠️ Invalid Curvance MarketManager address format: {market_id}\n"
                     "MarketManager address should be 42 characters (0x + 40 hex chars).\n"
-                    "Example: 0xd6365555f6a697C7C295bA741100AA644cE28545\n\n"
-                    "You can find MarketManager addresses in Curvance's documentation."
+                    "Example: 0xd6365555f6a697C7C295bA741100AA644cE28545"
                 )
                 return
-            address_data['market_manager_address'] = market_manager_lower
-        user_data[chat_id]['addresses'][address_key] = address_data
-        user_data[chat_id]['default_threshold'] = threshold  # Update default
-        message = f"✅ Added {address} on {protocol_info['name']} with threshold {threshold}"
-        if protocol_id == 'morpho' and market_id:
-            message += f"\nMarket ID: {market_id}"
-        elif protocol_id == 'curvance' and market_id:
-            message += f"\nMarketManager: {market_id}"
-
+    
+    # Initialize user data structure if needed
+    if chat_id not in user_data:
+        user_data[chat_id] = {'addresses': {}}
+    
+    if address not in user_data[chat_id]['addresses']:
+        user_data[chat_id]['addresses'][address] = {
+            'default_threshold': threshold,
+            'protocols': {}
+        }
+    
+    address_data = user_data[chat_id]['addresses'][address]
+    
+    # Set threshold at appropriate level
+    if market_id:
+        # Market-specific threshold
+        if protocol_id not in address_data['protocols']:
+            address_data['protocols'][protocol_id] = {'markets': {}}
+        elif 'markets' not in address_data['protocols'][protocol_id]:
+            address_data['protocols'][protocol_id]['markets'] = {}
+        
+        address_data['protocols'][protocol_id]['markets'][market_id] = {'threshold': threshold}
+        protocol_info = PROTOCOL_CONFIG[protocol_id]
+        message = f"✅ Set threshold {threshold} for {address} on {protocol_info['name']} market {market_id[:20]}..."
+        
+    elif protocol_id:
+        # Protocol-specific threshold
+        if protocol_id not in address_data['protocols']:
+            address_data['protocols'][protocol_id] = {}
+        address_data['protocols'][protocol_id]['threshold'] = threshold
+        protocol_info = PROTOCOL_CONFIG[protocol_id]
+        message = f"✅ Set threshold {threshold} for {address} on {protocol_info['name']} protocol"
+        
+    else:
+        # Global threshold
+        address_data['default_threshold'] = threshold
+        message = f"✅ Set global threshold {threshold} for {address} (applies to all protocols)"
+    
     save_user_data(user_data)
-    await update.message.reply_text(message)
     
-    # Immediately check and notify (saves user a step!)
-    if protocol_id == 'morpho':
-        health_factor = check_morpho_health_factor_all_markets(address, market_id, protocol_info['chain_id'])
-    else:
-        health_factor = check_health_factor(address, protocol_id)
+    # Automatically check and show positions for this address
+    checking_msg = await update.message.reply_text("🔍 Checking positions...")
+    check_message = await build_check_message(chat_id, [address])
     
-    if health_factor is not None:
-        status_emoji = "✅" if health_factor >= threshold else "⚠️"
-        await update.message.reply_text(
-            f"{status_emoji} Current health factor: {health_factor:.4f}\n"
-            f"Threshold: {threshold}\n"
-            f"View on explorer: {protocol_info['explorer_url']}/address/{address}"
-        )
+    # Delete the "checking..." message
+    try:
+        await checking_msg.delete()
+    except Exception as e:
+        logger.debug(f"Could not delete checking message: {e}")
+    
+    # Combine confirmation and check results in one message
+    combined_message = message
+    if check_message:
+        combined_message += "\n\n" + check_message
     else:
-        if protocol_id == 'morpho' and not market_id:
-            await update.message.reply_text(
-                "⚠️ Unable to fetch health factor automatically.\n"
-                "Morpho requires market ID. If you know your market ID, use:\n"
-                f"/add morpho {threshold} {address} <market_id>"
-            )
-        else:
-            await update.message.reply_text(
-                "⚠️ Unable to fetch health factor. Please try /check later."
-            )
+        combined_message += f"\n\nNo active positions found for {address}."
+    
+    await update.message.reply_text(combined_message, parse_mode='Markdown', disable_web_page_preview=True)
 
 # Function to handle /list command
 async def list_addresses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
-        await update.message.reply_text("You are not currently monitoring any addresses.\nUse /add <protocol> <threshold> <address> to start monitoring.")
+        await update.message.reply_text(
+            "You are not currently monitoring any addresses.\n"
+            "Use /add <address> <threshold> to start monitoring."
+        )
         return
 
     addresses = user_data[chat_id]['addresses']
     message = f"📋 You are monitoring {len(addresses)} address(es):\n\n"
     
-    for idx, (address_key, info) in enumerate(addresses.items(), 1):
-        threshold = info.get('threshold', user_data[chat_id].get('default_threshold', 1.5))
-        protocol_id = info.get('protocol', DEFAULT_PROTOCOL)
-        address = info.get('address', address_key.split(':')[0])
-        protocol_info = PROTOCOL_CONFIG.get(protocol_id, PROTOCOL_CONFIG[DEFAULT_PROTOCOL])
+    for idx, (address, address_data) in enumerate(addresses.items(), 1):
+        default_threshold = address_data.get('default_threshold', 1.5)
+        protocols_data = address_data.get('protocols', {})
         
-        # For Morpho, check if market_id is stored
-        market_id = info.get('market_id') if protocol_id == 'morpho' else None
+        message += f"{idx}. {address}\n"
+        message += f"   Global threshold: {default_threshold}\n"
         
-        if protocol_id == 'morpho':
-            health_factor = check_morpho_health_factor_all_markets(address, market_id, protocol_info['chain_id'])
-        else:
-            health_factor = check_health_factor(address, protocol_id)
-            
-        if health_factor is not None:
-            status = "🟢" if health_factor >= threshold else "🔴"
-            message += f"{idx}. {status} {address}\n"
-            message += f"   Protocol: {protocol_info['name']}\n"
-            if protocol_id == 'morpho' and market_id:
-                message += f"   Market ID: {market_id}\n"
-            message += f"   Threshold: {threshold}, Current: {health_factor:.4f}\n\n"
-        else:
-            message += f"{idx}. ⚠️ {address}\n"
-            message += f"   Protocol: {protocol_info['name']}\n"
-            if protocol_id == 'morpho':
-                if not market_id:
-                    message += f"   Note: Morpho requires market ID. Use /add morpho <threshold> <address> <market_id>\n"
-                else:
-                    message += f"   Market ID: {market_id}\n"
-            message += f"   Threshold: {threshold}, Status: Unable to fetch\n\n"
+        if protocols_data:
+            message += f"   Protocol-specific thresholds:\n"
+            for protocol_id, protocol_data in protocols_data.items():
+                protocol_info = PROTOCOL_CONFIG.get(protocol_id, {})
+                protocol_name = protocol_info.get('name', protocol_id)
+                
+                if 'threshold' in protocol_data:
+                    message += f"     • {protocol_name}: {protocol_data['threshold']}\n"
+                
+                if 'markets' in protocol_data:
+                    for market_id, market_data in protocol_data['markets'].items():
+                        market_threshold = market_data.get('threshold', default_threshold)
+                        if protocol_id == 'morpho':
+                            message += f"       - Market {market_id[:20]}...: {market_threshold}\n"
+                        elif protocol_id == 'curvance':
+                            message += f"       - MarketManager {market_id[:20]}...: {market_threshold}\n"
+        
+        message += "\n"
     
     await update.message.reply_text(message)
 
 # Function to handle /remove command
 async def remove_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Support: /remove <address> or /remove <address> <market_id> (for Morpho)
-    if len(context.args) < 1 or len(context.args) > 2:
+    """
+    Remove address from monitoring.
+    Supports: /remove <address> [protocol] [market]
+    """
+    if len(context.args) < 1:
         await update.message.reply_text(
-            "Usage: /remove <address> [market_id]\n"
-            "Example: /remove 0x1234...\n"
-            "Example: /remove 0x1234... 0xMarketID (for Morpho with specific market)"
+            "Usage: /remove <address> [protocol] [market]\n"
+            "Examples:\n"
+            "  /remove 0x1234... - Remove entire address\n"
+            "  /remove 0x1234... morpho - Remove Morpho protocol threshold\n"
+            "  /remove 0x1234... morpho 0xMarketID - Remove specific market threshold"
         )
         return
 
     chat_id = str(update.effective_chat.id)
     address = context.args[0].lower()
-    market_id = context.args[1].lower() if len(context.args) == 2 else None
+    protocol_id = context.args[1].lower() if len(context.args) >= 2 else None
+    market_id = context.args[2].lower() if len(context.args) >= 3 else None
 
-    if chat_id not in user_data or 'addresses' not in user_data[chat_id]:
-        await update.message.reply_text("You are not monitoring any addresses.")
+    if chat_id not in user_data or address not in user_data[chat_id].get('addresses', {}):
+        await update.message.reply_text(
+            f"Address {address} is not being monitored.\n"
+            "Use /list to see all monitored addresses."
+        )
         return
 
-    # Find matching address keys
-    found_keys = []
-    for key, info in user_data[chat_id]['addresses'].items():
-        info_address = info.get('address', key.split(':')[0]).lower()
-        if info_address == address:
-            # If market_id specified, only match that specific market
-            if market_id:
-                info_market_id = info.get('market_id', '').lower()
-                if info_market_id == market_id:
-                    found_keys.append(key)
-            else:
-                # No market_id specified, match all entries for this address
-                found_keys.append(key)
+    address_data = user_data[chat_id]['addresses'][address]
     
-    if not found_keys:
-        if market_id:
+    if market_id:
+        # Remove market-specific threshold
+        if protocol_id and protocol_id in address_data.get('protocols', {}):
+            markets = address_data['protocols'][protocol_id].get('markets', {})
+            if market_id in markets:
+                del address_data['protocols'][protocol_id]['markets'][market_id]
+                # Clean up empty markets dict
+                if not address_data['protocols'][protocol_id]['markets']:
+                    del address_data['protocols'][protocol_id]['markets']
+                save_user_data(user_data)
+                await update.message.reply_text(
+                    f"✅ Removed market-specific threshold for {address} on {PROTOCOL_CONFIG.get(protocol_id, {}).get('name', protocol_id)} market {market_id[:20]}..."
+                )
+                return
+        await update.message.reply_text("Market threshold not found.")
+        
+    elif protocol_id:
+        # Remove protocol-specific threshold
+        if protocol_id in address_data.get('protocols', {}):
+            del address_data['protocols'][protocol_id]
+            # Clean up empty protocols dict
+            if not address_data['protocols']:
+                del address_data['protocols']
+            save_user_data(user_data)
             await update.message.reply_text(
-                f"Address {address} with market ID {market_id} is not being monitored.\n"
-                "Use /list to see all monitored addresses."
+                f"✅ Removed protocol-specific threshold for {address} on {PROTOCOL_CONFIG.get(protocol_id, {}).get('name', protocol_id)}"
             )
-        else:
-            await update.message.reply_text(
-                f"Address {address} is not being monitored.\n"
-                "Use /list to see all monitored addresses."
-            )
-        return
-
-    # Remove all matching entries
-    removed_count = 0
-    protocols_removed = set()
-    for key in found_keys:
-        protocol_id = user_data[chat_id]['addresses'][key].get('protocol', DEFAULT_PROTOCOL)
-        protocols_removed.add(protocol_id)
-        del user_data[chat_id]['addresses'][key]
-        removed_count += 1
-    
-    # If no addresses left, remove user entirely
-    if not user_data[chat_id]['addresses']:
-        del user_data[chat_id]
-        message = f"✅ Removed {removed_count} address(es). All monitoring stopped."
+            return
+        await update.message.reply_text("Protocol threshold not found.")
+        
     else:
+        # Remove entire address
+        del user_data[chat_id]['addresses'][address]
+        
+        # If no addresses left, remove user entirely
+        if not user_data[chat_id]['addresses']:
+            del user_data[chat_id]
+        
         save_user_data(user_data)
-        protocol_names = [PROTOCOL_CONFIG.get(p, {}).get('name', p) for p in protocols_removed]
-        if market_id:
-            message = f"✅ Removed {address} (market: {market_id[:20]}...) from {', '.join(protocol_names)} monitoring."
-        else:
-            message = f"✅ Removed {removed_count} entry/entries for {address} from {', '.join(protocol_names)} monitoring."
+        await update.message.reply_text(f"✅ Removed {address} from monitoring.")
 
-    save_user_data(user_data)
-    await update.message.reply_text(message)
-
-# Function to handle /check command
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = str(update.effective_chat.id)
-    if chat_id not in user_data or not user_data[chat_id].get('addresses'):
-        await update.message.reply_text("You are not currently monitoring any addresses.\nUse /add <protocol> <threshold> <address> to start monitoring.")
-        return
-
-    addresses = user_data[chat_id]['addresses']
+# Function to auto-discover all positions for an address across all protocols
+async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
+    """
+    Auto-discover all active positions for an address across all protocols.
     
-    # Group entries by address
-    address_groups = {}
-    for address_key, info in addresses.items():
-        address = info.get('address', address_key.split(':')[0])
-        if address not in address_groups:
-            address_groups[address] = []
-        address_groups[address].append((address_key, info))
+    Returns:
+        List of position dicts with: protocol_id, market_id, health_factor, threshold, etc.
+    """
+    positions = []
+    address_data = user_data[chat_id].get('addresses', {}).get(address, {})
     
-    messages = []
-    
-    for address, entries in address_groups.items():
-        address_message = f"For {address}:\n"
+    # Check Neverland
+    try:
+        cache_key = f"neverland_{address}"
+        health_factor = get_cached_or_fetch(
+            cache_key,
+            check_health_factor,
+            address,
+            'neverland'
+        )
         
-        # Group entries by protocol
-        protocol_groups = {}
-        for address_key, info in entries:
-            protocol_id = info.get('protocol', DEFAULT_PROTOCOL)
-            if protocol_id not in protocol_groups:
-                protocol_groups[protocol_id] = []
-            protocol_groups[protocol_id].append((address_key, info))
-        
-        for protocol_id, protocol_entries in protocol_groups.items():
+        if is_valid_position(health_factor):
+            threshold = get_threshold_for_position(chat_id, address, 'neverland')
+            # Get collateral and debt data
+            neverland_info = None
             try:
-                protocol_info = PROTOCOL_CONFIG.get(protocol_id, PROTOCOL_CONFIG[DEFAULT_PROTOCOL])
-                address_message += f"\n{protocol_info['name']} protocol:\n"
+                protocol_info = PROTOCOL_CONFIG['neverland']
+                conn = protocol_connections['neverland']
+                cache_key_data = f"neverland_data_{address}"
+                account_data = get_cached_or_fetch(
+                    cache_key_data,
+                    protocols.get_neverland_account_data,
+                    address,
+                    conn['contract'],
+                    conn['w3']
+                )
+                if account_data:
+                    neverland_info = {
+                        'collateral_usd': account_data.get('collateral_usd', 0),
+                        'debt_usd': account_data.get('debt_usd', 0)
+                    }
+            except Exception as e:
+                logger.debug(f"Could not get Neverland account data: {e}")
+            
+            positions.append({
+                'protocol_id': 'neverland',
+                'market_id': None,
+                'health_factor': health_factor,
+                'threshold': threshold,
+                'market_info': neverland_info
+            })
+    except Exception as e:
+        logger.error(f"Error checking Neverland for {address}: {e}")
+    
+    # Check Morpho - auto-discover all markets
+    try:
+        protocol_info = PROTOCOL_CONFIG['morpho']
+        cache_key = f"morpho_markets_{address}"
+        markets_data = get_cached_or_fetch(
+            cache_key,
+            get_morpho_user_markets,
+            address,
+            protocol_info['chain_id']
+        )
+        
+        if markets_data:
+            for market in markets_data:
+                hf = market.get('healthFactor')
+                borrow_amount = market.get('borrowAssetsUsd', 0)
                 
-                # For Morpho, get all markets for this address
-                if protocol_id == 'morpho':
-                    markets_data = get_morpho_user_markets(address, protocol_info['chain_id'])
-                    market_map = {m['id'].lower(): m for m in markets_data} if markets_data else {}
+                if is_valid_position(hf, borrow_amount):
+                    market_id = market['id'].lower()
+                    threshold = get_threshold_for_position(chat_id, address, 'morpho', market_id)
+                    positions.append({
+                        'protocol_id': 'morpho',
+                        'market_id': market_id,
+                        'health_factor': float(hf),
+                        'threshold': threshold,
+                        'market_info': market
+                    })
+    except Exception as e:
+        logger.error(f"Error checking Morpho for {address}: {e}")
+    
+    # Check Curvance - auto-discover all MarketManagers
+    try:
+        protocol_info = PROTOCOL_CONFIG['curvance']
+        conn = protocol_connections['curvance']
+        
+        # Get all MarketManagers from Central Registry
+        cache_key = f"curvance_managers"
+        market_managers = get_cached_or_fetch(
+            cache_key,
+            protocols.get_curvance_market_managers,
+            conn['w3']
+        )
+        
+        # Check each MarketManager for positions
+        for market_manager in market_managers:
+            try:
+                cache_key_market = f"curvance_{address}_{market_manager}"
+                health_factor = get_cached_or_fetch(
+                    cache_key_market,
+                    protocols.check_curvance_health_factor,
+                    address,
+                    conn['contract'],
+                    conn['w3'],
+                    market_manager,
+                    None
+                )
                 
-                # Special handling for Morpho: if no market_id specified, show ALL markets
-                if protocol_id == 'morpho' and markets_data:
-                    # Check if any entry has a specific market_id
-                    has_specific_market = any(info.get('market_id') for _, info in protocol_entries)
-                    
-                    if not has_specific_market:
-                        # No specific market_id - show ALL markets
-                        threshold = protocol_entries[0][1].get('threshold', user_data[chat_id].get('default_threshold', 1.5)) if protocol_entries else user_data[chat_id].get('default_threshold', 1.5)
-                        threshold_str = f"{threshold:.3f}".rstrip('0').rstrip('.')
-                        
-                        for market in markets_data:
-                            hf = market.get('healthFactor')
-                            if hf is not None:
-                                try:
-                                    health_factor = float(hf)
-                                    status = "⚠️ " if health_factor < threshold else ""
-                                    liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
-                                    market_name = market['name'].upper()
-                                    market_url = f"https://app.morpho.org/monad/market/{market['id']}/{market['name']}?subTab=yourPosition"
-                                    address_message += f"{status}[{market_name}]({market_url}):\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
-                                except (ValueError, TypeError):
-                                    continue
-                        # Skip the normal loop for Morpho when showing all markets
-                        continue
-                
-                # Normal processing for other protocols or Morpho with specific market_id
-                for address_key, info in protocol_entries:
-                    threshold = info.get('threshold', user_data[chat_id].get('default_threshold', 1.5))
-                    market_id = info.get('market_id') if protocol_id == 'morpho' else None
-                    
-                    if protocol_id == 'morpho':
-                        health_factor = check_morpho_health_factor_all_markets(address, market_id, protocol_info['chain_id'])
-                        # Get market info
-                        if market_id and market_id.lower() in market_map:
-                            market_info = market_map[market_id.lower()]
-                        elif markets_data:
-                            # If no market_id specified, use worst (lowest HF) market
-                            market_info = min(markets_data, key=lambda x: x.get('healthFactor', float('inf')))
-                        else:
-                            market_info = None
-                    elif protocol_id == 'curvance':
-                        market_manager = info.get('market_manager_address')
-                        conn = protocol_connections[protocol_id]
-                        # Pass None for known_market_managers to use Central Registry
-                        health_factor = protocols.check_curvance_health_factor(
+                if is_valid_position(health_factor):
+                    threshold = get_threshold_for_position(chat_id, address, 'curvance', market_manager)
+                    # Get position details (token symbols and amounts)
+                    try:
+                        cache_key_details = f"curvance_details_{address}_{market_manager}"
+                        position_details_list = get_cached_or_fetch(
+                            cache_key_details,
+                            protocols.get_curvance_position_details,
                             address,
                             conn['contract'],
                             conn['w3'],
-                            market_manager,  # User-specified MarketManager (if provided)
-                            None  # None = query Central Registry for all MarketManagers
+                            market_manager,
+                            None
                         )
-                        market_info = None
-                    else:
-                        health_factor = check_health_factor(address, protocol_id)
-                        market_info = None
+                        # Use first position detail if available
+                        curvance_info = position_details_list[0] if position_details_list else None
+                    except Exception as e:
+                        logger.debug(f"Could not get Curvance position details: {e}")
+                        curvance_info = None
+                    
+                    positions.append({
+                        'protocol_id': 'curvance',
+                        'market_id': market_manager,
+                        'health_factor': health_factor,
+                        'threshold': threshold,
+                        'market_info': curvance_info
+                    })
+            except Exception as e:
+                logger.debug(f"Error checking Curvance MarketManager {market_manager} for {address}: {e}")
+                continue
+    except Exception as e:
+        logger.error(f"Error checking Curvance for {address}: {e}")
+    
+    # Check Euler
+    try:
+        cache_key = f"euler_{address}"
+        health_factor = get_cached_or_fetch(
+            cache_key,
+            check_health_factor,
+            address,
+            'euler'
+        )
+        
+        if is_valid_position(health_factor):
+            threshold = get_threshold_for_position(chat_id, address, 'euler')
+            # Get collateral and debt data
+            euler_info = None
+            try:
+                protocol_info = PROTOCOL_CONFIG['euler']
+                conn = protocol_connections['euler']
+                cache_key_data = f"euler_data_{address}"
+                account_data = get_cached_or_fetch(
+                    cache_key_data,
+                    protocols.get_euler_account_data,
+                    address,
+                    conn['contract'],
+                    conn['w3']
+                )
+                if account_data:
+                    euler_info = {
+                        'collateral_usd': account_data.get('collateral_usd', 0),
+                        'debt_usd': account_data.get('debt_usd', 0)
+                    }
+            except Exception as e:
+                logger.debug(f"Could not get Euler account data: {e}")
+            
+            positions.append({
+                'protocol_id': 'euler',
+                'market_id': None,
+                'health_factor': health_factor,
+                'threshold': threshold,
+                'market_info': euler_info
+            })
+    except Exception as e:
+        logger.error(f"Error checking Euler for {address}: {e}")
+    
+    return positions
+
+# Helper function to build quick check message (health factors only - fast)
+async def build_check_message(chat_id: str, addresses: List[str], filter_protocol: Optional[str] = None) -> Optional[str]:
+    """
+    Build a formatted message showing all positions for given addresses.
+    
+    Args:
+        chat_id: Chat ID
+        addresses: List of addresses to check
+        filter_protocol: Optional protocol ID to filter by (e.g., 'morpho', 'neverland')
+    
+    Returns:
+        Formatted message string, or None if no addresses to check
+    """
+    if not addresses:
+        return None
+    
+    messages = []
+    
+    # Process each address
+    for address in addresses:
+        try:
+            # Auto-discover all positions
+            positions = await discover_all_positions(address, chat_id)
+            
+            if not positions:
+                messages.append(f"For {address}:\n\nNo active positions found.")
+                continue
+            
+            # Group positions by protocol
+            protocol_groups = {}
+            for pos in positions:
+                protocol_id = pos['protocol_id']
+                # Filter by protocol if specified
+                if filter_protocol and protocol_id != filter_protocol:
+                    continue
+                if protocol_id not in protocol_groups:
+                    protocol_groups[protocol_id] = []
+                protocol_groups[protocol_id].append(pos)
+            
+            # Skip if no positions after filtering
+            if not protocol_groups:
+                continue
+            
+            # Build message
+            address_message = f"For {address}:\n"
+            
+            for protocol_id, protocol_positions in protocol_groups.items():
+                protocol_info = PROTOCOL_CONFIG[protocol_id]
+                address_message += f"\n{protocol_info['name']} protocol:\n"
                 
-                if health_factor is not None:
+                # Sort by health factor (worst first)
+                protocol_positions.sort(key=lambda x: x['health_factor'])
+                
+                for pos in protocol_positions:
+                    health_factor = pos['health_factor']
+                    threshold = pos['threshold']
+                    market_id = pos['market_id']
+                    market_info = pos.get('market_info')
+                    
                     status = "⚠️ " if health_factor < threshold else ""
-                    
-                    # Calculate liquidation percentage: if HF = 1.5, collateral can drop by (1 - 1/1.5) = 33.3%
                     liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
-                    
-                    # Format threshold to preserve user's input format (remove trailing zeros, max 3 decimals)
                     threshold_str = f"{threshold:.3f}".rstrip('0').rstrip('.')
                     
-                    # Display health factors consistently across all protocols
-                    # All protocols use the same format: health factor where 1.0 = liquidation threshold
-                    # Threshold 1.5 means the same thing for all protocols: warn when health drops below 1.5x liquidation threshold
-                    if protocol_id == 'morpho' and market_info and market_info.get('name'):
-                        market_name = market_info['name'].upper()
+                    # Format message - reordered: Current Health first, then threshold
+                    if protocol_id == 'morpho' and market_info:
+                        market_name = market_info.get('name', 'Unknown').upper()
                         market_url = f"https://app.morpho.org/monad/market/{market_info['id']}/{market_info['name']}?subTab=yourPosition"
-                        address_message += f"{status}[{market_name}]({market_url}):\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
-                    elif protocol_id == 'curvance':
-                        # Curvance: same format as other protocols for consistency
-                        market_manager_address = info.get('market_manager_address')
-                        if market_manager_address:
-                            market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
-                            address_message += f"{status}[Curvance Market]({market_url}):\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
-                        else:
-                            protocol_url = protocol_info.get('app_url', '')
-                            if protocol_url:
-                                address_message += f"{status}[{protocol_info['name']}]({protocol_url}):\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
-                            else:
-                                address_message += f"{status}{protocol_info['name']}:\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                    elif protocol_id == 'curvance' and market_id:
+                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
+                        address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     else:
-                        # Add hyperlink for Neverland and other protocols
+                        # Neverland and other protocols
                         protocol_url = protocol_info.get('app_url', '')
                         if protocol_url:
-                            address_message += f"{status}[{protocol_info['name']}]({protocol_url}):\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
+                            address_message += f"{status}[{protocol_info['name']}]({protocol_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                         else:
-                            address_message += f"{status}{protocol_info['name']}:\nThreshold: {threshold_str}, Current Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation)\n"
-                else:
-                    if protocol_id == 'morpho':
-                        if market_id:
-                            address_message += f"⚠️ Market {market_id[:20]}...: Unable to fetch\n"
-                        else:
-                            address_message += f"⚠️ Unable to fetch\n"
-                    else:
-                        address_message += f"⚠️ Unable to fetch\n"
-            except Exception as e:
-                logger.error(f"Error processing protocol {protocol_id} for address {address}: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-                protocol_info = PROTOCOL_CONFIG.get(protocol_id, PROTOCOL_CONFIG[DEFAULT_PROTOCOL])
-                address_message += f"\n{protocol_info['name']} protocol:\n"
-                address_message += f"⚠️ Error checking {protocol_info.get('name', protocol_id)}: {str(e)[:100]}\n"
-        
-        messages.append(address_message)
+                            address_message += f"{status}{protocol_info['name']}:\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+            
+            messages.append(address_message)
+            
+        except Exception as e:
+            logger.error(f"Error processing address {address}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            messages.append(f"For {address}:\n\n⚠️ Error checking positions: {str(e)[:100]}")
     
-    final_message = "\n".join(messages)
-    await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)
+    if not messages:
+        return None
+    
+    return "\n\n".join(messages)
+
+# Helper function to build full position message with collateral/debt details
+async def build_position_message(chat_id: str, addresses: List[str]) -> Optional[str]:
+    """
+    Build a detailed message showing all positions with collateral and debt values.
+    
+    Args:
+        chat_id: Chat ID
+        addresses: List of addresses to check
+    
+    Returns:
+        Formatted message string with full position details, or None if no addresses
+    """
+    if not addresses:
+        return None
+    
+    messages = []
+    
+    # Process each address
+    for address in addresses:
+        try:
+            # Auto-discover all positions
+            positions = await discover_all_positions(address, chat_id)
+            
+            if not positions:
+                messages.append(f"For {address}:\n\nNo active positions found.")
+                continue
+            
+            # Group positions by protocol
+            protocol_groups = {}
+            for pos in positions:
+                protocol_id = pos['protocol_id']
+                if protocol_id not in protocol_groups:
+                    protocol_groups[protocol_id] = []
+                protocol_groups[protocol_id].append(pos)
+            
+            # Build message
+            address_message = f"For {address}:\n"
+            
+            for protocol_id, protocol_positions in protocol_groups.items():
+                protocol_info = PROTOCOL_CONFIG[protocol_id]
+                address_message += f"\n{protocol_info['name']} protocol:\n"
+                
+                # Sort by health factor (worst first)
+                protocol_positions.sort(key=lambda x: x['health_factor'])
+                
+                for pos in protocol_positions:
+                    health_factor = pos['health_factor']
+                    threshold = pos['threshold']
+                    market_id = pos['market_id']
+                    market_info = pos.get('market_info')
+                    
+                    status = "⚠️ " if health_factor < threshold else ""
+                    liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
+                    threshold_str = f"{threshold:.3f}".rstrip('0').rstrip('.')
+                    
+                    # Extract collateral and debt values
+                    collateral_usd = None
+                    debt_usd = None
+                    collateral_token = None
+                    debt_token = None
+                    collateral_amount = None
+                    debt_amount = None
+                    
+                    if protocol_id == 'morpho' and market_info:
+                        # Morpho GraphQL returns supplyAssetsUsd and borrowAssetsUsd
+                        # But supplyAssetsUsd might be 0 if user only borrowed (no supply)
+                        # Check state.collateral or supplyAssets for actual collateral
+                        collateral_usd = market_info.get('supplyAssetsUsd', 0)
+                        debt_usd = market_info.get('borrowAssetsUsd', 0)
+                        
+                        # If supplyAssetsUsd is 0 but there's debt, check state.collateral
+                        # Morpho positions can have collateral without supplying (e.g., using vault shares)
+                        if collateral_usd == 0 and debt_usd > 0:
+                            # Try to get collateral from state if available
+                            state = market_info.get('state', {})
+                            if state:
+                                collateral_raw = state.get('collateral', 0)
+                                # If collateral exists but supplyAssetsUsd is 0, we'd need price oracle
+                                # For now, keep as 0 if supplyAssetsUsd is 0
+                                pass
+                    elif protocol_id == 'neverland' and market_info:
+                        collateral_usd = market_info.get('collateral_usd', 0)
+                        debt_usd = market_info.get('debt_usd', 0)
+                    elif protocol_id == 'curvance' and market_info:
+                        # Curvance: use raw amounts with token symbols
+                        collateral_token = market_info.get('collateral_token', '?')
+                        debt_token = market_info.get('debt_token', '?')
+                        collateral_amount = market_info.get('collateral_amount', 0)
+                        debt_amount = market_info.get('debt_amount', 0)
+                    
+                    # Format collateral/debt display
+                    tvl_debt_str = ""
+                    if protocol_id == 'curvance' and market_info:
+                        # Format with 3 sig fig
+                        def format_sig_fig(value):
+                            if value == 0:
+                                return "0"
+                            # Convert to scientific notation for sig fig calculation
+                            import math
+                            if value >= 1:
+                                # For values >= 1, round to 3 sig fig
+                                magnitude = math.floor(math.log10(value))
+                                factor = 10 ** (2 - magnitude)
+                                rounded = round(value * factor) / factor
+                                # Format nicely
+                                if rounded >= 1_000_000:
+                                    return f"{rounded/1_000_000:.3g}M"
+                                elif rounded >= 1_000:
+                                    return f"{rounded/1_000:.3g}K"
+                                else:
+                                    return f"{rounded:.3g}"
+                            else:
+                                # For values < 1, show 3 sig fig
+                                return f"{value:.3g}"
+                        
+                        collateral_str = format_sig_fig(collateral_amount) if collateral_amount else "0"
+                        debt_str = format_sig_fig(debt_amount) if debt_amount else "0"
+                        tvl_debt_str = f"\nCollateral: {collateral_str} {collateral_token} | Debt: {debt_str} {debt_token}"
+                    elif collateral_usd is not None and debt_usd is not None:
+                        # Format large numbers nicely for USD values
+                        def format_currency(value):
+                            if value == 0:
+                                return "$0.00"
+                            if value >= 1_000_000:
+                                return f"${value/1_000_000:.2f}M"
+                            elif value >= 1_000:
+                                return f"${value/1_000:.2f}K"
+                            else:
+                                return f"${value:.2f}"
+                        
+                        tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
+                    
+                    # Format message based on protocol
+                    if protocol_id == 'morpho' and market_info:
+                        market_name = market_info.get('name', 'Unknown').upper()
+                        market_url = f"https://app.morpho.org/monad/market/{market_info['id']}/{market_info['name']}?subTab=yourPosition"
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                    elif protocol_id == 'curvance' and market_id:
+                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
+                        address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                    else:
+                        # Neverland and other protocols
+                        protocol_url = protocol_info.get('app_url', '')
+                        if protocol_url:
+                            address_message += f"{status}[{protocol_info['name']}]({protocol_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                        else:
+                            address_message += f"{status}{protocol_info['name']}:\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+            
+            messages.append(address_message)
+            
+        except Exception as e:
+            logger.error(f"Error processing address {address}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            messages.append(f"For {address}:\n\n⚠️ Error checking positions: {str(e)[:100]}")
+    
+    if not messages:
+        return None
+    
+    return "\n\n".join(messages)
+
+# Function to handle /check command
+async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Auto-discover and check positions with optional filters:
+    - /check - Check all protocols for all addresses
+    - /check <protocol> - Check specific protocol for all addresses
+    - /check <address> - Check all protocols for specific address
+    """
+    chat_id = str(update.effective_chat.id)
+    logger.info(f"/check called by chat_id: {chat_id}, args: {context.args}")
+    
+    if chat_id not in user_data or not user_data[chat_id].get('addresses'):
+        logger.info(f"[{INSTANCE_ID}] No addresses found for chat_id {chat_id}, user_data: {user_data.get(chat_id, {})}")
+        await update.message.reply_text(
+            f"[Instance: {INSTANCE_ID[:8]}]\n"
+            "You are not currently monitoring any addresses.\n"
+            "Use /add <address> <threshold> to start monitoring."
+        )
+        return
+    
+    addresses = list(user_data[chat_id]['addresses'].keys())
+    
+    if not addresses:
+        await update.message.reply_text("No addresses to check.")
+        return
+    
+    # Parse arguments
+    filter_protocol = None
+    filter_address = None
+    
+    if context.args and len(context.args) > 0:
+        arg = context.args[0].lower()
+        
+        # Check if it's a protocol ID
+        if arg in PROTOCOL_CONFIG:
+            filter_protocol = arg
+            logger.info(f"Filtering by protocol: {filter_protocol}")
+        else:
+            # Check if it's a valid address format
+            # Use any protocol's Web3 instance to validate
+            first_protocol = list(protocol_connections.values())[0]
+            if first_protocol['w3'].is_address(arg):
+                # Check if this address is being monitored
+                if arg in addresses:
+                    filter_address = arg
+                    logger.info(f"Filtering by address: {filter_address}")
+                else:
+                    await update.message.reply_text(
+                        f"Address {arg} is not being monitored.\n"
+                        f"Use /add {arg} <threshold> to start monitoring it."
+                    )
+                    return
+            else:
+                await update.message.reply_text(
+                    f"Invalid argument: {arg}\n\n"
+                    "Usage:\n"
+                    "  /check - Check all protocols for all addresses\n"
+                    "  /check <protocol> - Check specific protocol (e.g., /check morpho)\n"
+                    "  /check <address> - Check specific address\n\n"
+                    f"Supported protocols: {', '.join(PROTOCOL_CONFIG.keys())}"
+                )
+                return
+    
+    # Send "checking..." message and store it for deletion
+    checking_msg = await update.message.reply_text("🔍 Checking positions...")
+    
+    # Filter addresses if needed
+    addresses_to_check = [filter_address] if filter_address else addresses
+    
+    # Build check message with optional protocol filter
+    final_message = await build_check_message(chat_id, addresses_to_check, filter_protocol=filter_protocol)
+    
+    # Delete the "checking..." message
+    try:
+        await checking_msg.delete()
+    except Exception as e:
+        logger.debug(f"Could not delete checking message: {e}")
+    
+    # Send single consolidated message
+    if final_message:
+        logger.info(f"Sending /check response from instance {INSTANCE_ID}, chat_id: {chat_id}")
+        await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)
+    else:
+        filter_msg = ""
+        if filter_protocol:
+            filter_msg = f" for {PROTOCOL_CONFIG[filter_protocol]['name']}"
+        elif filter_address:
+            filter_msg = f" for {filter_address}"
+        await update.message.reply_text(f"No active positions found{filter_msg}.")
+
+# Function to handle /position command (full details with collateral/debt)
+async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Show full position details including collateral and debt values.
+    """
+    chat_id = str(update.effective_chat.id)
+    logger.info(f"/position called by chat_id: {chat_id}")
+    
+    if chat_id not in user_data or not user_data[chat_id].get('addresses'):
+        await update.message.reply_text(
+            "You are not currently monitoring any addresses.\n"
+            "Use /add <address> <threshold> to start monitoring."
+        )
+        return
+    
+    addresses = list(user_data[chat_id]['addresses'].keys())
+    
+    if not addresses:
+        await update.message.reply_text("No addresses to check.")
+        return
+    
+    # Send "checking..." message and store it for deletion
+    checking_msg = await update.message.reply_text("🔍 Checking positions...")
+    
+    # Build full position message with collateral/debt details
+    final_message = await build_position_message(chat_id, addresses)
+    
+    # Delete the "checking..." message
+    try:
+        await checking_msg.delete()
+    except Exception as e:
+        logger.debug(f"Could not delete checking message: {e}")
+    
+    # Send single consolidated message
+    if final_message:
+        logger.info(f"Sending /position response from instance {INSTANCE_ID}, chat_id: {chat_id}")
+        await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)
+    else:
+        await update.message.reply_text("No active positions found.")
 
 # Function to handle /protocols command
 async def list_protocols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -698,75 +1207,63 @@ async def list_protocols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # Function to handle /repay command (manual rebalancing suggestions)
 async def repay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate rebalancing suggestions for user's positions."""
+    """Generate rebalancing suggestions for user's positions using auto-discovery."""
     chat_id = str(update.effective_chat.id)
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         await update.message.reply_text(
             "You are not currently monitoring any addresses.\n"
-            "Use /add <protocol> <threshold> <address> to start monitoring."
+            "Use /add <address> <threshold> to start monitoring."
         )
         return
     
-    addresses = user_data[chat_id]['addresses']
+    addresses = list(user_data[chat_id]['addresses'].keys())
     messages_sent = 0
     
-    # Group entries by address
-    address_groups = {}
-    for address_key, info in addresses.items():
-        address = info.get('address', address_key.split(':')[0])
-        if address not in address_groups:
-            address_groups[address] = []
-        address_groups[address].append((address_key, info))
+    # Find worst position across all addresses
+    worst_position = None
+    worst_hf = float('inf')
     
-    for address, entries in address_groups.items():
-        # Group by protocol
-        protocol_groups = {}
-        for address_key, info in entries:
-            protocol_id = info.get('protocol', DEFAULT_PROTOCOL)
-            if protocol_id not in protocol_groups:
-                protocol_groups[protocol_id] = []
-            protocol_groups[protocol_id].append((address_key, info))
-        
-        for protocol_id, protocol_entries in protocol_groups.items():
-            protocol_info = PROTOCOL_CONFIG.get(protocol_id, PROTOCOL_CONFIG[DEFAULT_PROTOCOL])
+    for address in addresses:
+        try:
+            positions = await discover_all_positions(address, chat_id)
             
-            # Find worst HF market
-            worst_hf = float('inf')
-            worst_market_id = None
-            worst_threshold = 1.5
-            
-            for address_key, info in protocol_entries:
-                threshold = info.get('threshold', user_data[chat_id].get('default_threshold', 1.5))
-                market_id = info.get('market_id') if protocol_id == 'morpho' else None
+            for pos in positions:
+                health_factor = pos['health_factor']
+                threshold = pos['threshold']
                 
-                if protocol_id == 'morpho':
-                    health_factor = check_morpho_health_factor_all_markets(address, market_id, protocol_info['chain_id'])
-                else:
-                    health_factor = check_health_factor(address, protocol_id)
-                
-                if health_factor is not None and health_factor < worst_hf:
+                # Only consider positions below threshold
+                if health_factor < threshold and health_factor < worst_hf:
                     worst_hf = health_factor
-                    worst_market_id = market_id
-                    worst_threshold = threshold
-            
-            # Generate rebalancing message for worst position
-            if worst_hf < float('inf'):
-                rebalancing_msg = rebalancing.generate_rebalancing_message(
-                    address=address,
-                    protocol_id=protocol_id,
-                    market_id=worst_market_id,
-                    current_hf=worst_hf,
-                    threshold=worst_threshold,
-                    chain_id=protocol_info.get('chain_id', 143)
-                )
-                
-                if rebalancing_msg:
-                    await update.message.reply_text(
-                        rebalancing_msg,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True
-                    )
-                    messages_sent += 1
+                    worst_position = {
+                        'address': address,
+                        'protocol_id': pos['protocol_id'],
+                        'market_id': pos['market_id'],
+                        'health_factor': health_factor,
+                        'threshold': threshold
+                    }
+        except Exception as e:
+            logger.error(f"Error checking positions for {address} in /repay: {e}")
+            continue
+    
+    # Generate rebalancing message for worst position
+    if worst_position:
+        protocol_info = PROTOCOL_CONFIG[worst_position['protocol_id']]
+        rebalancing_msg = rebalancing.generate_rebalancing_message(
+            address=worst_position['address'],
+            protocol_id=worst_position['protocol_id'],
+            market_id=worst_position['market_id'],
+            current_hf=worst_position['health_factor'],
+            threshold=worst_position['threshold'],
+            chain_id=protocol_info.get('chain_id', 143)
+        )
+        
+        if rebalancing_msg:
+            await update.message.reply_text(
+                rebalancing_msg,
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+            messages_sent += 1
     
     if messages_sent == 0:
         await update.message.reply_text(
@@ -823,36 +1320,37 @@ async def handle_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # Function to check health factor and notify user for all addresses
 async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> None:
+    """
+    Auto-discover all positions and send alerts for positions below threshold.
+    """
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         return
 
-    addresses = user_data[chat_id]['addresses']
+    addresses = list(user_data[chat_id]['addresses'].keys())
     alerts = []
 
-    for address_key, info in addresses.items():
-        threshold = info.get('threshold', user_data[chat_id].get('default_threshold', 1.5))
-        protocol_id = info.get('protocol', DEFAULT_PROTOCOL)
-        address = info.get('address', address_key.split(':')[0])
-        protocol_info = PROTOCOL_CONFIG.get(protocol_id, PROTOCOL_CONFIG[DEFAULT_PROTOCOL])
-        
-        # For Morpho, check if market_id is stored
-        market_id = info.get('market_id') if protocol_id == 'morpho' else None
-        
-        if protocol_id == 'morpho':
-            health_factor = check_morpho_health_factor_all_markets(address, market_id, protocol_info['chain_id'])
-        else:
-            health_factor = check_health_factor(address, protocol_id)
-
-        if health_factor is not None:
-            if health_factor < threshold:
-                alerts.append({
-                    'address': address,
-                    'health_factor': health_factor,
-                    'threshold': threshold,
-                    'protocol': protocol_info,
-                    'market_id': market_id if protocol_id == 'morpho' else None
-                })
-        # Note: We don't send alerts for fetch failures to avoid spam
+    # Check all addresses using auto-discovery
+    for address in addresses:
+        try:
+            positions = await discover_all_positions(address, chat_id)
+            
+            for pos in positions:
+                health_factor = pos['health_factor']
+                threshold = pos['threshold']
+                
+                if health_factor < threshold:
+                    protocol_info = PROTOCOL_CONFIG[pos['protocol_id']]
+                    alerts.append({
+                        'address': address,
+                        'health_factor': health_factor,
+                        'threshold': threshold,
+                        'protocol': protocol_info,
+                        'protocol_id': pos['protocol_id'],
+                        'market_id': pos['market_id']
+                    })
+        except Exception as e:
+            logger.error(f"Error checking positions for {address}: {e}")
+            continue
 
     # Send alerts if any
     if alerts:
@@ -860,7 +1358,7 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
             # Generate rebalancing message with vault suggestions
             rebalancing_msg = rebalancing.generate_rebalancing_message(
                 address=alert['address'],
-                protocol_id=alert['protocol'].get('name', '').lower(),
+                protocol_id=alert['protocol_id'],
                 market_id=alert.get('market_id'),
                 current_hf=alert['health_factor'],
                 threshold=alert['threshold'],
@@ -879,7 +1377,7 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
                 # Fallback to simple alert if rebalancing message generation fails
                 message = f"⚠️ Alert: Health factor for {alert['address']} on {alert['protocol']['name']} is {alert['health_factor']:.4f}, which is below your threshold of {alert['threshold']}!\n\n"
                 if alert.get('market_id'):
-                    message += f"Market ID: {alert['market_id']}\n"
+                    message += f"Market ID: {alert['market_id'][:20]}...\n"
                 message += f"Check your position: {alert['protocol']['app_url']}\n"
                 message += f"View on explorer: {alert['protocol']['explorer_url']}/address/{alert['address']}"
                 await context.bot.send_message(chat_id=int(chat_id), text=message)
@@ -914,6 +1412,7 @@ def main() -> None:
     application.add_handler(CommandHandler("add", add_address))
     application.add_handler(CommandHandler("list", list_addresses))
     application.add_handler(CommandHandler("check", check))
+    application.add_handler(CommandHandler("position", position))
     application.add_handler(CommandHandler("remove", remove_address))
     application.add_handler(CommandHandler("stop", stop))
     application.add_handler(CommandHandler("protocols", list_protocols))
@@ -928,7 +1427,8 @@ def main() -> None:
     job_queue = application.job_queue
     job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=CHECK_INTERVAL)
 
-    logger.info("Multi-Protocol Lending Health Monitor Bot started. Polling for updates...")
+    logger.info(f"Multi-Protocol Lending Health Monitor Bot started. Instance ID: {INSTANCE_ID}")
+    logger.info("Polling for updates...")
     for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
         logger.info(f"  - {protocol_info['name']} ({protocol_id}) on {protocol_info['chain']}")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

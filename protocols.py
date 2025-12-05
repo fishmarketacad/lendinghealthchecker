@@ -213,6 +213,217 @@ def check_curvance_health_factor(address: str, contract, w3, market_manager_addr
         logger.debug(traceback.format_exc())
         return None
 
+def get_curvance_position_details(address: str, contract, w3, market_manager_address: str = None, known_market_managers: List[str] = None) -> List[Dict]:
+    """
+    Get Curvance position details including token symbols and raw amounts.
+    
+    Args:
+        address: User's wallet address
+        contract: ProtocolReader contract instance
+        w3: Web3 instance
+        market_manager_address: Specific MarketManager contract address
+        known_market_managers: List of MarketManager addresses
+    
+    Returns:
+        List of position dicts with: cToken, collateral_token_symbol, collateral_amount, debt_token_symbol, debt_amount
+    """
+    position_details = []
+    
+    try:
+        address_checksum = w3.to_checksum_address(address)
+        result = contract.functions.getAllDynamicState(address_checksum).call()
+        market_data, user_data = result
+        positions = user_data[1]  # positions array
+        
+        if not positions:
+            return []
+        
+        # ERC20 ABI for symbol and decimals
+        erc20_abi = [
+            {"inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
+            {"inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"}
+        ]
+        
+        for position in positions:
+            # position structure: (cToken, collateral, debt, health, tokenBalance)
+            cToken = position[0]
+            collateral_raw = position[1]
+            debt_raw = position[2]
+            
+            # Skip if no debt
+            if debt_raw == 0:
+                continue
+            
+            # Get token symbol and decimals
+            try:
+                token_contract = w3.eth.contract(address=cToken, abi=erc20_abi)
+                collateral_symbol = token_contract.functions.symbol().call()
+                collateral_decimals = token_contract.functions.decimals().call()
+                
+                # Convert to human-readable amount (3 sig fig)
+                collateral_amount = collateral_raw / (10 ** collateral_decimals)
+                
+                # For debt, we need to find the borrowable token - this is complex
+                # For now, we'll use a placeholder or try to get it from MarketManager
+                # This is a simplified version - full implementation would need MarketManager query
+                debt_symbol = "?"  # Would need MarketManager to get borrowable token
+                debt_decimals = 18  # Default assumption
+                debt_amount = debt_raw / (10 ** debt_decimals)
+                
+                position_details.append({
+                    'cToken': cToken,
+                    'collateral_token': collateral_symbol,
+                    'collateral_amount': collateral_amount,
+                    'debt_token': debt_symbol,
+                    'debt_amount': debt_amount
+                })
+            except Exception as e:
+                logger.debug(f"Error getting token info for cToken {cToken}: {e}")
+                # Still add position with raw amounts
+                position_details.append({
+                    'cToken': cToken,
+                    'collateral_token': '?',
+                    'collateral_amount': collateral_raw,
+                    'debt_token': '?',
+                    'debt_amount': debt_raw
+                })
+        
+        return position_details
+    except Exception as e:
+        logger.error(f"Error getting Curvance position details for {address}: {e}")
+        return []
+
+
+def check_euler_health_factor(address: str, contract, w3) -> Optional[float]:
+    """
+    Check health factor for Euler V2 protocol using accountLens.
+    
+    Args:
+        address: User's wallet address
+        contract: accountLens contract instance
+        w3: Web3 instance
+    
+    Returns:
+        Health factor as float, or None if error
+    """
+    try:
+        address_checksum = w3.to_checksum_address(address)
+        
+        # Try to get account health from accountLens
+        # accountLens typically has getAccountHealth or similar function
+        try:
+            # Try getAccountHealth function (common in Euler V2 lens contracts)
+            health_result = contract.functions.getAccountHealth(address_checksum).call()
+            
+            # Health factor might be returned as (healthFactor, isHealthy) or just healthFactor
+            if isinstance(health_result, (list, tuple)):
+                health_factor_raw = health_result[0]
+            else:
+                health_factor_raw = health_result
+            
+            # Euler V2 health factors are typically in 18 decimals (1e18 = 1.0)
+            health_factor = health_factor_raw / 1e18
+            
+            # Filter out invalid values (like max uint256)
+            if health_factor > 1e10:
+                return None
+            
+            return health_factor
+        except AttributeError:
+            # If getAccountHealth doesn't exist, try alternative methods
+            try:
+                # Try getAccountStatus or getAccountInfo
+                account_info = contract.functions.getAccountStatus(address_checksum).call()
+                if isinstance(account_info, (list, tuple)) and len(account_info) > 0:
+                    health_factor_raw = account_info[0]
+                    health_factor = health_factor_raw / 1e18
+                    if health_factor > 1e10:
+                        return None
+                    return health_factor
+            except AttributeError:
+                logger.debug("Euler accountLens doesn't have expected methods, trying EVC directly")
+                # Fallback: query EVC (Euler Vault Controller) directly
+                evc_address = '0x7a9324E8f270413fa2E458f5831226d99C7477CD'
+                evc_abi = [
+                    {
+                        "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
+                        "name": "getAccountHealth",
+                        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+                        "stateMutability": "view",
+                        "type": "function"
+                    }
+                ]
+                evc_contract = w3.eth.contract(address=w3.to_checksum_address(evc_address), abi=evc_abi)
+                health_factor_raw = evc_contract.functions.getAccountHealth(address_checksum).call()
+                health_factor = health_factor_raw / 1e18
+                if health_factor > 1e10:
+                    return None
+                return health_factor
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error checking Euler health factor for {address}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None
+
+def get_euler_account_data(address: str, contract, w3) -> Optional[Dict]:
+    """
+    Get Euler account data including collateral and debt values.
+    
+    Args:
+        address: User's wallet address
+        contract: accountLens contract instance
+        w3: Web3 instance
+    
+    Returns:
+        Dict with 'collateral_usd', 'debt_usd', 'health_factor', or None if error
+    """
+    try:
+        address_checksum = w3.to_checksum_address(address)
+        
+        # Try to get account balances/values from accountLens
+        try:
+            # Try getAccountBalances or getAccountValues
+            account_data = contract.functions.getAccountBalances(address_checksum).call()
+            
+            # Parse the result - structure depends on Euler V2 implementation
+            # Typically returns: (collateralValue, debtValue, ...)
+            if isinstance(account_data, (list, tuple)):
+                collateral_raw = account_data[0] if len(account_data) > 0 else 0
+                debt_raw = account_data[1] if len(account_data) > 1 else 0
+                
+                # Values are typically in 18 decimals, convert to USD (assuming 1:1 for now)
+                # In production, would need price oracle
+                collateral_usd = collateral_raw / 1e18
+                debt_usd = debt_raw / 1e18
+                
+                # Get health factor
+                health_factor = check_euler_health_factor(address, contract, w3)
+                
+                return {
+                    'collateral_usd': collateral_usd,
+                    'debt_usd': debt_usd,
+                    'health_factor': health_factor
+                }
+        except AttributeError:
+            # If method doesn't exist, try alternative
+            logger.debug("Euler accountLens doesn't have getAccountBalances, using health factor only")
+            health_factor = check_euler_health_factor(address, contract, w3)
+            if health_factor:
+                return {
+                    'collateral_usd': 0,  # Would need price oracle for accurate values
+                    'debt_usd': 0,
+                    'health_factor': health_factor
+                }
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error getting Euler account data for {address}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None
+
 
 def check_neverland_health_factor(address: str, contract, w3) -> Optional[float]:
     """
@@ -236,6 +447,38 @@ def check_neverland_health_factor(address: str, contract, w3) -> Optional[float]
         return health_factor
     except Exception as e:
         logger.error(f"Error checking Neverland health factor for {address}: {e}")
+        return None
+
+def get_neverland_account_data(address: str, contract, w3) -> Optional[Dict]:
+    """
+    Get Neverland account data including collateral and debt values.
+    
+    Args:
+        address: User's wallet address
+        contract: Web3 contract instance
+        w3: Web3 instance
+    
+    Returns:
+        Dict with 'collateral_usd', 'debt_usd', 'health_factor', or None if error
+    """
+    try:
+        address_checksum = w3.to_checksum_address(address)
+        account_data = contract.functions.getUserAccountData(address_checksum).call()
+        # getUserAccountData returns: [totalCollateralBase, totalDebtBase, availableBorrowsBase, 
+        #                              currentLiquidationThreshold, ltv, healthFactor]
+        # Values are in base currency (typically USD) with 8 decimals
+        collateral_base = account_data[0] / 1e8  # Convert from 8 decimals to USD
+        debt_base = account_data[1] / 1e8  # Convert from 8 decimals to USD
+        health_factor_raw = account_data[5]
+        health_factor = health_factor_raw / 1e18
+        
+        return {
+            'collateral_usd': collateral_base,
+            'debt_usd': debt_base,
+            'health_factor': health_factor
+        }
+    except Exception as e:
+        logger.error(f"Error getting Neverland account data for {address}: {e}")
         return None
 
 

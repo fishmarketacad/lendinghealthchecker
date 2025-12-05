@@ -878,7 +878,8 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     elif protocol_id == 'euler' and market_id:
-                        # Euler vault URL format: /positions/{account}/{vault}
+                        # Euler vault URL format: /positions/{account}/{vault}?network=monad
+                        # Use the monitored address (not vault address) for the URL
                         vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
                         address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     else:
@@ -1043,7 +1044,8 @@ async def build_position_message(chat_id: str, addresses: List[str]) -> Optional
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'euler' and market_id:
-                        # Euler vault URL format: /positions/{account}/{vault}
+                        # Euler vault URL format: /positions/{account}/{vault}?network=monad
+                        # Use the monitored address (not vault address) for the URL
                         vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
                         # Extract collateral/debt from market_info
                         if market_info:

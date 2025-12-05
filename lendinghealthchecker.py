@@ -73,8 +73,10 @@ PROTOCOL_CONFIG = {
         'chain': 'Monad',
         'chain_id': 143,
         'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
-        # accountLens contract address on Monad (view-only helper for account data)
-        'pool_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
+        # vaultLens contract address on Monad (for discovering user vaults)
+        'pool_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
+        # accountLens for account-level queries
+        'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
         'app_url': 'https://app.euler.finance',
         'explorer_url': 'https://monadvision.com',
         'health_factor_method': 'getAccountHealth',  # Custom method in protocols.py
@@ -768,46 +770,37 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
     except Exception as e:
         logger.error(f"Error checking Curvance for {address}: {e}")
     
-    # Check Euler
+    # Check Euler - auto-discover all vaults (similar to Morpho markets)
     try:
-        cache_key = f"euler_{address}"
-        health_factor = get_cached_or_fetch(
+        protocol_info = PROTOCOL_CONFIG['euler']
+        conn = protocol_connections['euler']
+        
+        # Get all vaults where user has positions using vaultLens
+        cache_key = f"euler_vaults_{address}"
+        vaults_data = get_cached_or_fetch(
             cache_key,
-            check_health_factor,
+            protocols.get_euler_user_vaults,
             address,
-            'euler'
+            conn['w3'],
+            protocol_info.get('account_lens_address'),
+            protocol_info.get('pool_address')  # vaultLens address
         )
         
-        if is_valid_position(health_factor):
-            threshold = get_threshold_for_position(chat_id, address, 'euler')
-            # Get collateral and debt data
-            euler_info = None
-            try:
-                protocol_info = PROTOCOL_CONFIG['euler']
-                conn = protocol_connections['euler']
-                cache_key_data = f"euler_data_{address}"
-                account_data = get_cached_or_fetch(
-                    cache_key_data,
-                    protocols.get_euler_account_data,
-                    address,
-                    conn['contract'],
-                    conn['w3']
-                )
-                if account_data:
-                    euler_info = {
-                        'collateral_usd': account_data.get('collateral_usd', 0),
-                        'debt_usd': account_data.get('debt_usd', 0)
-                    }
-            except Exception as e:
-                logger.debug(f"Could not get Euler account data: {e}")
-            
-            positions.append({
-                'protocol_id': 'euler',
-                'market_id': None,
-                'health_factor': health_factor,
-                'threshold': threshold,
-                'market_info': euler_info
-            })
+        if vaults_data:
+            for vault in vaults_data:
+                hf = vault.get('health_factor')
+                debt_usd = vault.get('debt_usd', 0)
+                
+                if is_valid_position(hf, debt_usd):
+                    vault_address = vault.get('vault_address', '').lower()
+                    threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address)
+                    positions.append({
+                        'protocol_id': 'euler',
+                        'market_id': vault_address,
+                        'health_factor': float(hf),
+                        'threshold': threshold,
+                        'market_info': vault
+                    })
     except Exception as e:
         logger.error(f"Error checking Euler for {address}: {e}")
     
@@ -884,6 +877,10 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                    elif protocol_id == 'euler' and market_id:
+                        # Euler vault URL format: /positions/{account}/{vault}
+                        vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
+                        address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     else:
                         # Neverland and other protocols
                         protocol_url = protocol_info.get('app_url', '')
@@ -1045,6 +1042,29 @@ async def build_position_message(chat_id: str, addresses: List[str]) -> Optional
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                    elif protocol_id == 'euler' and market_id:
+                        # Euler vault URL format: /positions/{account}/{vault}
+                        vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
+                        # Extract collateral/debt from market_info
+                        if market_info:
+                            collateral_usd = market_info.get('collateral_usd', 0)
+                            debt_usd = market_info.get('debt_usd', 0)
+                            if collateral_usd is not None and debt_usd is not None:
+                                def format_currency(value):
+                                    if value == 0:
+                                        return "$0.00"
+                                    if value >= 1_000_000:
+                                        return f"${value/1_000_000:.2f}M"
+                                    elif value >= 1_000:
+                                        return f"${value/1_000:.2f}K"
+                                    else:
+                                        return f"${value:.2f}"
+                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
+                            else:
+                                tvl_debt_str = ""
+                        else:
+                            tvl_debt_str = ""
+                        address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     else:
                         # Neverland and other protocols
                         protocol_url = protocol_info.get('app_url', '')

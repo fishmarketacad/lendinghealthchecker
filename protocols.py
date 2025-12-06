@@ -1032,7 +1032,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     markets = []
     
     try:
-        # Try simplified query first (faster, more reliable)
+        # Original working query - simple and reliable
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1049,14 +1049,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                         collateralAsset {
                             symbol
                         }
-                        collateralFactor
                     }
                     healthFactor
-                    state {
-                        collateral
-                        borrowAssets
-                        borrowAssetsUsd
-                    }
                     borrowAssets
                     borrowAssetsUsd
                     supplyAssets
@@ -1071,46 +1065,12 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
             "chainId": chain_id
         }
         
-        try:
-            response = requests.post(
-                MORPHO_GRAPHQL_URL,
-                json={"query": query, "variables": variables},
-                headers={"Content-Type": "application/json"},
-                timeout=30  # Increased timeout
-            )
-        except requests.exceptions.Timeout:
-            logger.warning(f"Morpho GraphQL query timed out for {address}, trying simpler query...")
-            # Fallback to even simpler query without collateralFactor
-            query_simple = """
-            query GetUserPositions($address: String!, $chainId: Int!) {
-                userByAddress(
-                    chainId: $chainId
-                    address: $address
-                ) {
-                    address
-                    marketPositions {
-                        market {
-                            uniqueKey
-                            loanAsset {
-                                symbol
-                            }
-                            collateralAsset {
-                                symbol
-                            }
-                        }
-                        healthFactor
-                        borrowAssetsUsd
-                        supplyAssetsUsd
-                    }
-                }
-            }
-            """
-            response = requests.post(
-                MORPHO_GRAPHQL_URL,
-                json={"query": query_simple, "variables": variables},
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
+        response = requests.post(
+            MORPHO_GRAPHQL_URL,
+            json={"query": query, "variables": variables},
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
         
         if response.status_code == 200:
             data = response.json()
@@ -1134,18 +1094,6 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             collateral_symbol = collateral_asset.get('symbol', '?')
                             market_name = f"{collateral_symbol}-{loan_symbol}".lower()
                             
-                            # Extract market details
-                            market_data = pos.get('market', {})
-                            collateral_factor = market_data.get('collateralFactor')  # May be None if simplified query was used
-                            
-                            # Get collateral amount from state (if available)
-                            state_data = pos.get('state', {})
-                            collateral_raw = state_data.get('collateral') if state_data else None
-                            
-                            # Note: Price and decimals removed from query to prevent timeout
-                            # Collateral USD will be calculated from health_factor and collateral_factor instead
-                            collateral_usd_calculated = None
-                            
                             markets.append({
                                 'id': market_unique_key,
                                 'name': market_name,
@@ -1155,11 +1103,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'borrowAssets': pos.get('borrowAssets', '0'),
                                 'borrowAssetsUsd': pos.get('borrowAssetsUsd', 0),
                                 'supplyAssets': pos.get('supplyAssets', '0'),
-                                'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0),
-                                'collateral': collateral_raw,
-                                'collateralFactor': collateral_factor,
-                                'collateralPrice': collateral_price,
-                                'collateralUsdCalculated': collateral_usd_calculated
+                                'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0)
                             })
                     
                     if markets:

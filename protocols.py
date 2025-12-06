@@ -424,10 +424,19 @@ def get_euler_account_data(address: str, contract, w3) -> Optional[Dict]:
         logger.debug(traceback.format_exc())
         return None
 
+# Known Euler vault addresses on Monad (for isolated vaults not returned by getAccountEnabledVaultsInfo)
+KNOWN_EULER_VAULTS = [
+    '0x28bD4F19C812CBF9e33A206f87125f14E65dc8aA',  # shMON-WMON-AUSD isolated vault
+    # Add more as discovered
+]
+
 def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, evc_address: str = None) -> List[Dict]:
     """
     Get list of Euler vaults where user has positions using AccountLens.
-    Uses getAccountEnabledVaultsInfo which returns all vaults with positions.
+    
+    Strategy:
+    1. First try getAccountEnabledVaultsInfo (returns EVC-enabled vaults only)
+    2. Then try getAccountInfo for known isolated vault addresses
     
     Args:
         address: User's wallet address

@@ -1273,7 +1273,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'liquidationDropPct': liquidation_drop_pct
                             })
                     
-                    # Fetch LLTV and raw borrow amount from contract for markets where they're missing
+                    # Always fetch accurate amounts from contract (GraphQL supplyAssets might be 0 or missing)
                     if markets and chain_id == 143:  # Only for Monad
                         try:
                             # Use the w3 instance already initialized at function start
@@ -1285,11 +1285,90 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             
                             for market in markets:
                                 # Fetch LLTV from contract if missing
-                                if market.get('lltv') is None:
+                                if market.get('lltv') is None or market.get('lltv') == 0:
                                     lltv_from_contract = get_morpho_market_lltv(market['id'], contract, w3)
                                     if lltv_from_contract:
                                         market['lltv'] = lltv_from_contract
                                         logger.debug(f"Fetched LLTV from contract for market {market['id']}: {lltv_from_contract:.4f}")
+                                
+                                # Always fetch collateral and borrow amounts from contract for accuracy
+                                # GraphQL supplyAssets is often 0 or missing
+                                try:
+                                    # Convert market ID to bytes32
+                                    market_id_clean = market['id'].replace('0x', '').lower()
+                                    if len(market_id_clean) == 64:
+                                        market_id_bytes32 = bytes.fromhex(market_id_clean)
+                                        
+                                        # Get position data and market params from contract
+                                        position_data = contract.functions.position(market_id_bytes32, address_checksum).call()
+                                        market_params_tuple, market_data, user_position = position_data
+                                        
+                                        # Get market params to get token addresses
+                                        market_params = contract.functions.idToMarketParams(market_id_bytes32).call()
+                                        loan_token_address = market_params[0]
+                                        collateral_token_address = market_params[1]
+                                        
+                                        # Extract position data
+                                        supply_shares = user_position[0]
+                                        borrow_shares = user_position[1]
+                                        
+                                        # Convert supply shares to supply assets (collateral)
+                                        total_supply_assets = market_data[0]
+                                        total_supply_shares = market_data[1]
+                                        if total_supply_shares > 0 and supply_shares > 0:
+                                            supply_assets_raw = (supply_shares * total_supply_assets) // total_supply_shares
+                                            
+                                            # Get collateral token decimals dynamically
+                                            collateral_decimals = get_token_decimals(collateral_token_address, w3)
+                                            
+                                            # Convert to human-readable format
+                                            collateral_amount = float(supply_assets_raw) / (10 ** collateral_decimals)
+                                            market['supplyAmountHuman'] = collateral_amount
+                                            logger.debug(f"Fetched collateral amount from contract: {collateral_amount:.4f} {market.get('collateralAsset')} (decimals: {collateral_decimals})")
+                                        
+                                        # Convert borrow shares to borrow assets
+                                        if borrow_shares > 0:
+                                            total_borrow_assets = market_data[2]
+                                            total_borrow_shares = market_data[3]
+                                            
+                                            if total_borrow_shares > 0:
+                                                # Convert shares to assets: assets = (shares * total_assets) / total_shares
+                                                borrow_assets_raw = (borrow_shares * total_borrow_assets) // total_borrow_shares
+                                                
+                                                # Get loan token decimals dynamically
+                                                loan_decimals = get_token_decimals(loan_token_address, w3)
+                                                
+                                                # Convert to human-readable format
+                                                borrow_amount = float(borrow_assets_raw) / (10 ** loan_decimals)
+                                                market['borrowAmountHuman'] = borrow_amount
+                                                logger.debug(f"Fetched borrow amount from contract: {borrow_amount:.2f} {market.get('loanAsset')} (decimals: {loan_decimals})")
+                                        
+                                        # Recalculate liquidation price with accurate amounts
+                                        if market.get('lltv') and market.get('lltv') > 0 and market.get('supplyAmountHuman') and market.get('supplyAmountHuman') > 0:
+                                            try:
+                                                lltv = float(market['lltv'])
+                                                supply_human = float(market['supplyAmountHuman'])
+                                                borrow_usd = float(market['borrowAssetsUsd'])
+                                                
+                                                if lltv > 0 and supply_human > 0:
+                                                    # Recalculate liquidation price: Debt_USD / (Collateral_Qty * LLTV)
+                                                    liquidation_price = borrow_usd / (supply_human * lltv)
+                                                    market['liquidationPrice'] = liquidation_price
+                                                    
+                                                    # Calculate percentage drop
+                                                    supply_usd = float(market['supplyAssetsUsd'])
+                                                    if supply_usd > 0:
+                                                        current_price = supply_usd / supply_human
+                                                        if current_price > 0:
+                                                            liquidation_drop_pct = ((current_price - liquidation_price) / current_price) * 100
+                                                            market['liquidationDropPct'] = liquidation_drop_pct
+                                                            logger.debug(f"Recalculated liquidation price: ${liquidation_price:.2f}, drop: {liquidation_drop_pct:.1f}%")
+                                            except Exception as e:
+                                                logger.debug(f"Could not recalculate liquidation price: {e}")
+                                except Exception as e:
+                                    logger.debug(f"Could not fetch position data from contract for market {market['id']}: {e}")
+                                    import traceback
+                                    logger.debug(traceback.format_exc())
                                 
                                 # Always fetch raw borrow amount, collateral amount, and calculate liquidation price from contract
                                 # This ensures we have accurate data even if GraphQL doesn't provide it

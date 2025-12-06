@@ -177,6 +177,7 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 
                 market_data, user_data = result
                 logger.debug(f"Curvance: market_data type: {type(market_data)}, user_data type: {type(user_data)}")
+                logger.info(f"Curvance: market_data has {len(market_data) if market_data else 0} markets")
                 
                 if not user_data or len(user_data) < 2:
                     logger.warning(f"Curvance: Invalid user_data structure: {user_data}")
@@ -184,6 +185,15 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 
                 raw_positions = user_data[1]  # positions array
                 logger.info(f"Curvance: Found {len(raw_positions) if raw_positions else 0} raw positions for {user_address}")
+                
+                # Build a map of cToken -> market info from market_data
+                # Each market entry has: (cToken, price, borrowRate, supplyRate, utilization, liquidity)
+                ctoken_to_market = {}
+                if market_data:
+                    for market in market_data:
+                        market_ctoken = market[0]  # First element is cToken address
+                        ctoken_to_market[market_ctoken.lower()] = market
+                        logger.debug(f"Curvance: Market data for cToken {market_ctoken}: price={market[1]}, borrowRate={market[2]}")
                 
                 if not raw_positions:
                     logger.info(f"Curvance: No positions found for {user_address} (empty positions array)")
@@ -231,8 +241,11 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     continue
                 
                 # Try each MarketManager to find the one that works
+                # CRITICAL: We need to verify that getPositionHealth returns a health factor that MATCHES
+                # the health from getAllDynamicState, otherwise it's the wrong MarketManager
                 market_manager_found = None
                 health_factor = None
+                expected_health_from_state = health_raw_from_state / 1e18 if health_raw_from_state > 0 and health_raw_from_state <= 1e10 else None
                 
                 for mm_address in market_managers:
                     try:
@@ -260,13 +273,22 @@ class CurvanceStrategy(LendingProtocolStrategy):
                             
                             # Skip if getPositionHealth returned max uint256 (invalid)
                             if health_factor_candidate > 1e10:
-                                logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}, using fallback")
+                                logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}")
                                 continue  # Try next MarketManager or use fallback
+                            
+                            # CRITICAL FIX: Verify that getPositionHealth health matches getAllDynamicState health
+                            # If they don't match (within 1% tolerance), this is the WRONG MarketManager
+                            if expected_health_from_state:
+                                health_diff = abs(health_factor_candidate - expected_health_from_state)
+                                health_tolerance = expected_health_from_state * 0.01  # 1% tolerance
+                                if health_diff > health_tolerance:
+                                    logger.debug(f"Curvance: getPositionHealth health {health_factor_candidate:.3f} doesn't match getAllDynamicState health {expected_health_from_state:.3f} for MM {mm_address}, cToken {cToken} - wrong MM!")
+                                    continue  # Wrong MarketManager, try next
                             
                             health_factor = health_factor_candidate
                             market_manager_found = mm_address
-                            logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, health: {health_factor:.3f}")
-                            break  # Found working MarketManager
+                            logger.info(f"Curvance: ✅ Verified MarketManager {mm_address} for cToken {cToken}, health: {health_factor:.3f} (matches state: {expected_health_from_state:.3f if expected_health_from_state else 'N/A'})")
+                            break  # Found correct MarketManager
                         else:
                             logger.debug(f"Curvance: getPositionHealth returned 0 health for MM {mm_address}, cToken {cToken}")
                     except Exception as e:

@@ -68,24 +68,25 @@ PROTOCOL_CONFIG = {
         'health_factor_divisor': 1e18,
         'abi': protocols.load_abi('curvance')
     },
-    'euler': {
-        'name': 'Euler',
-        'chain': 'Monad',
-        'chain_id': 143,
-        'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
-        # EVC (Euler Vault Controller) address - required for getAccountEnabledVaultsInfo
-        'pool_address': '0x7a9324E8f270413fa2E458f5831226d99C7477CD',
-        # accountLens for account-level queries (discovering vaults)
-        'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
-        # vaultLens address (for vault-specific queries if needed)
-        'vault_lens_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
-        'app_url': 'https://app.euler.finance',
-        'explorer_url': 'https://monadvision.com',
-        'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
-        'health_factor_index': None,  # Will need custom parsing
-        'health_factor_divisor': 1e18,
-        'abi': protocols.load_abi('AccountLens')  # Use AccountLens ABI (case-sensitive)
-    }
+            # Euler disabled - waiting for subgraph support on Monad
+            # 'euler': {
+            #     'name': 'Euler',
+            #     'chain': 'Monad',
+            #     'chain_id': 143,
+            #     'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
+            #     # EVC (Euler Vault Controller) address - required for getAccountEnabledVaultsInfo
+            #     'pool_address': '0x7a9324E8f270413fa2E458f5831226d99C7477CD',
+            #     # accountLens for account-level queries (discovering vaults)
+            #     'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
+            #     # vaultLens address (for vault-specific queries if needed)
+            #     'vault_lens_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
+            #     'app_url': 'https://app.euler.finance',
+            #     'explorer_url': 'https://monadvision.com',
+            #     'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
+            #     'health_factor_index': None,  # Will need custom parsing
+            #     'health_factor_divisor': 1e18,
+            #     'abi': protocols.load_abi('AccountLens')  # Use AccountLens ABI (case-sensitive)
+            # }
 }
 
 # Default protocol
@@ -100,11 +101,7 @@ CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', 3600))  # Default to 1 hou
 protocol_connections = {}
 for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
     w3 = Web3(Web3.HTTPProvider(protocol_info['rpc_url']))
-    # For Euler, use accountLens address instead of pool_address (EVC)
-    if protocol_id == 'euler' and 'account_lens_address' in protocol_info:
-        contract_address = protocol_info['account_lens_address']
-    else:
-        contract_address = protocol_info['pool_address']
+    contract_address = protocol_info['pool_address']
     contract = w3.eth.contract(address=contract_address, abi=protocol_info['abi'])
     protocol_connections[protocol_id] = {
         'w3': w3,
@@ -314,8 +311,8 @@ def check_health_factor(address, protocol_id='neverland'):
             market_manager = None  # Will be passed from user data in check function
             return protocols.check_curvance_health_factor(address, contract, conn['w3'], market_manager, None)  # None = use Central Registry
         
-        elif protocol_id == 'euler':
-            return protocols.check_euler_health_factor(address, contract, conn['w3'])
+        # elif protocol_id == 'euler':
+        #     return protocols.check_euler_health_factor(address, contract, conn['w3'])
         
         else:
             # Generic fallback - try calling the method directly
@@ -787,54 +784,54 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
         except Exception as e:
             logger.error(f"Error checking Curvance for {address}: {e}")
     
-    # Check Euler - now supports both EVC-enabled and isolated vaults
-    if filter_protocol is None or filter_protocol == 'euler':
-        try:
-            protocol_info = PROTOCOL_CONFIG['euler']
-            conn = protocol_connections['euler']
-            
-            logger.info(f"Checking Euler for {address}...")
-            
-            # Get all vaults where user has positions using AccountLens
-            cache_key = f"euler_vaults_{address}"
-            vaults_data = get_cached_or_fetch(
-                cache_key,
-                protocols.get_euler_user_vaults,
-                address,
-                conn['w3'],
-                protocol_info.get('account_lens_address'),
-                protocol_info.get('pool_address')  # EVC address
-            )
-            
-            logger.info(f"Euler query returned {len(vaults_data) if vaults_data else 0} vaults for {address}")
-            
-            if vaults_data:
-                for vault in vaults_data:
-                    hf = vault.get('health_factor')
-                    debt_usd = vault.get('debt_usd', 0)
-                    vault_address = vault.get('vault_address', '')
-                    
-                    logger.debug(f"Euler vault {vault_address}: hf={hf}, debt=${debt_usd}")
-                    
-                    if is_valid_position(hf, debt_usd):
-                        vault_address_lower = vault_address.lower() if vault_address else ''
-                        threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address_lower)
-                        positions.append({
-                            'protocol_id': 'euler',
-                            'market_id': vault_address_lower,
-                            'health_factor': float(hf),
-                            'threshold': threshold,
-                            'market_info': vault
-                        })
-                        logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
-                    else:
-                        logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
-            else:
-                logger.info(f"No Euler vaults found for {address}")
-        except Exception as e:
-            logger.error(f"Error checking Euler for {address}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+    # Euler disabled - waiting for subgraph support on Monad
+    # if filter_protocol is None or filter_protocol == 'euler':
+    #     try:
+    #         protocol_info = PROTOCOL_CONFIG['euler']
+    #         conn = protocol_connections['euler']
+    #         
+    #         logger.info(f"Checking Euler for {address}...")
+    #         
+    #         # Get all vaults where user has positions using AccountLens
+    #         cache_key = f"euler_vaults_{address}"
+    #         vaults_data = get_cached_or_fetch(
+    #             cache_key,
+    #             protocols.get_euler_user_vaults,
+    #             address,
+    #             conn['w3'],
+    #             protocol_info.get('account_lens_address'),
+    #             protocol_info.get('pool_address')  # EVC address
+    #         )
+    #         
+    #         logger.info(f"Euler query returned {len(vaults_data) if vaults_data else 0} vaults for {address}")
+    #         
+    #         if vaults_data:
+    #             for vault in vaults_data:
+    #                 hf = vault.get('health_factor')
+    #                 debt_usd = vault.get('debt_usd', 0)
+    #                 vault_address = vault.get('vault_address', '')
+    #                 
+    #                 logger.debug(f"Euler vault {vault_address}: hf={hf}, debt=${debt_usd}")
+    #                 
+    #                 if is_valid_position(hf, debt_usd):
+    #                     vault_address_lower = vault_address.lower() if vault_address else ''
+    #                     threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address_lower)
+    #                     positions.append({
+    #                         'protocol_id': 'euler',
+    #                         'market_id': vault_address_lower,
+    #                         'health_factor': float(hf),
+    #                         'threshold': threshold,
+    #                         'market_info': vault
+    #                     })
+    #                     logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
+    #                 else:
+    #                     logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
+    #         else:
+    #             logger.info(f"No Euler vaults found for {address}")
+    #     except Exception as e:
+    #         logger.error(f"Error checking Euler for {address}: {e}")
+    #         import traceback
+    #         logger.error(traceback.format_exc())
     
     return positions
 
@@ -910,11 +907,11 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
-                    elif protocol_id == 'euler' and market_id:
-                        # Euler vault URL format: /positions/{account}/{vault}?network=monad
-                        # Use the monitored address (not vault address) for the URL
-                        vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
-                        address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                    # elif protocol_id == 'euler' and market_id:
+                    #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
+                    #     # Use the monitored address (not vault address) for the URL
+                    #     vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
+                    #     address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     else:
                         # Neverland and other protocols
                         protocol_url = protocol_info.get('app_url', '')
@@ -1002,21 +999,20 @@ async def build_position_message(chat_id: str, addresses: List[str]) -> Optional
                     
                     if protocol_id == 'morpho' and market_info:
                         # Morpho GraphQL returns supplyAssetsUsd and borrowAssetsUsd
-                        # But supplyAssetsUsd might be 0 if user only borrowed (no supply)
-                        # Check state.collateral or supplyAssets for actual collateral
+                        # But supplyAssetsUsd might be 0 if collateral is in vault shares (non-stablecoin)
+                        # In that case, calculate collateral from health factor: collateral = debt * health_factor
                         collateral_usd = market_info.get('supplyAssetsUsd', 0)
                         debt_usd = market_info.get('borrowAssetsUsd', 0)
                         
-                        # If supplyAssetsUsd is 0 but there's debt, check state.collateral
-                        # Morpho positions can have collateral without supplying (e.g., using vault shares)
-                        if collateral_usd == 0 and debt_usd > 0:
-                            # Try to get collateral from state if available
-                            state = market_info.get('state', {})
-                            if state:
-                                collateral_raw = state.get('collateral', 0)
-                                # If collateral exists but supplyAssetsUsd is 0, we'd need price oracle
-                                # For now, keep as 0 if supplyAssetsUsd is 0
-                                pass
+                        # If supplyAssetsUsd is 0 but there's debt and health factor, calculate collateral
+                        # Health factor = collateral_value / debt_value, so collateral = debt * health_factor
+                        if collateral_usd == 0 and debt_usd > 0 and health_factor:
+                            try:
+                                collateral_usd = float(debt_usd) * float(health_factor)
+                                logger.debug(f"Calculated Morpho collateral from health factor: ${debt_usd} * {health_factor} = ${collateral_usd:.2f}")
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Could not calculate Morpho collateral from health factor: {e}")
+                                collateral_usd = 0
                     elif protocol_id == 'neverland' and market_info:
                         collateral_usd = market_info.get('collateral_usd', 0)
                         debt_usd = market_info.get('debt_usd', 0)
@@ -1077,30 +1073,30 @@ async def build_position_message(chat_id: str, addresses: List[str]) -> Optional
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
-                    elif protocol_id == 'euler' and market_id:
-                        # Euler vault URL format: /positions/{account}/{vault}?network=monad
-                        # Use the monitored address (not vault address) for the URL
-                        vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
-                        # Extract collateral/debt from market_info
-                        if market_info:
-                            collateral_usd = market_info.get('collateral_usd', 0)
-                            debt_usd = market_info.get('debt_usd', 0)
-                            if collateral_usd is not None and debt_usd is not None:
-                                def format_currency(value):
-                                    if value == 0:
-                                        return "$0.00"
-                                    if value >= 1_000_000:
-                                        return f"${value/1_000_000:.2f}M"
-                                    elif value >= 1_000:
-                                        return f"${value/1_000:.2f}K"
-                                    else:
-                                        return f"${value:.2f}"
-                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
-                            else:
-                                tvl_debt_str = ""
-                        else:
-                            tvl_debt_str = ""
-                        address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                    # elif protocol_id == 'euler' and market_id:
+                    #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
+                    #     # Use the monitored address (not vault address) for the URL
+                    #     vault_url = f"{protocol_info.get('app_url', '')}/positions/{address}/{market_id}?network=monad"
+                    #     # Extract collateral/debt from market_info
+                    #     if market_info:
+                    #         collateral_usd = market_info.get('collateral_usd', 0)
+                    #         debt_usd = market_info.get('debt_usd', 0)
+                    #         if collateral_usd is not None and debt_usd is not None:
+                    #             def format_currency(value):
+                    #                 if value == 0:
+                    #                     return "$0.00"
+                    #                 if value >= 1_000_000:
+                    #                     return f"${value/1_000_000:.2f}M"
+                    #                 elif value >= 1_000:
+                    #                     return f"${value/1_000:.2f}K"
+                    #                 else:
+                    #                     return f"${value:.2f}"
+                    #             tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
+                    #         else:
+                    #             tvl_debt_str = ""
+                    #     else:
+                    #         tvl_debt_str = ""
+                    #     address_message += f"{status}[Euler Vault]({vault_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     else:
                         # Neverland and other protocols
                         protocol_url = protocol_info.get('app_url', '')

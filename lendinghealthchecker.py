@@ -1001,19 +1001,42 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                     if protocol_id == 'morpho' and market_info:
                         # Morpho GraphQL returns supplyAssetsUsd and borrowAssetsUsd
                         # But supplyAssetsUsd might be 0 if collateral is in vault shares (non-stablecoin)
-                        # In that case, calculate collateral from health factor: collateral = debt * health_factor
+                        # Try multiple methods to get accurate collateral value
                         collateral_usd = market_info.get('supplyAssetsUsd', 0)
                         debt_usd = market_info.get('borrowAssetsUsd', 0)
                         
-                        # If supplyAssetsUsd is 0 but there's debt and health factor, calculate collateral
-                        # Health factor = collateral_value / debt_value, so collateral = debt * health_factor
+                        # Method 1: Use calculated collateral USD from raw amount and price (most accurate)
+                        if collateral_usd == 0:
+                            collateral_usd_calculated = market_info.get('collateralUsdCalculated')
+                            if collateral_usd_calculated:
+                                collateral_usd = collateral_usd_calculated
+                                logger.debug(f"Using calculated Morpho collateral USD: ${collateral_usd:.2f}")
+                        
+                        # Method 2: Calculate from health factor and collateral factor
+                        # Health factor = (collateral_value * collateral_factor) / debt_value
+                        # So: collateral_value = (health_factor * debt_value) / collateral_factor
                         if collateral_usd == 0 and debt_usd > 0 and health_factor:
-                            try:
-                                collateral_usd = float(debt_usd) * float(health_factor)
-                                logger.debug(f"Calculated Morpho collateral from health factor: ${debt_usd} * {health_factor} = ${collateral_usd:.2f}")
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Could not calculate Morpho collateral from health factor: {e}")
-                                collateral_usd = 0
+                            collateral_factor = market_info.get('collateralFactor')
+                            if collateral_factor:
+                                try:
+                                    # collateral_factor is typically a decimal (e.g., 0.75 for 75% LTV)
+                                    collateral_factor_float = float(collateral_factor)
+                                    if collateral_factor_float > 0:
+                                        collateral_usd = (float(debt_usd) * float(health_factor)) / collateral_factor_float
+                                        logger.debug(f"Calculated Morpho collateral from HF and CF: ${debt_usd} * {health_factor} / {collateral_factor_float} = ${collateral_usd:.2f}")
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Error calculating collateral from collateral factor: {e}")
+                            
+                            # Method 3: Fallback - estimate with typical collateral factor (0.75-0.85)
+                            if collateral_usd == 0:
+                                try:
+                                    # Use average collateral factor of 0.80 as fallback
+                                    estimated_cf = 0.80
+                                    collateral_usd = (float(debt_usd) * float(health_factor)) / estimated_cf
+                                    logger.debug(f"Estimated Morpho collateral with default CF: ${debt_usd} * {health_factor} / {estimated_cf} = ${collateral_usd:.2f}")
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Could not estimate Morpho collateral: {e}")
+                                    collateral_usd = 0
                     elif protocol_id == 'neverland' and market_info:
                         collateral_usd = market_info.get('collateral_usd', 0)
                         debt_usd = market_info.get('debt_usd', 0)

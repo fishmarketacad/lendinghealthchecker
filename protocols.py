@@ -1044,10 +1044,19 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                         uniqueKey
                         loanAsset {
                             symbol
+                            decimals
+                            price {
+                                value
+                            }
                         }
                         collateralAsset {
                             symbol
+                            decimals
+                            price {
+                                value
+                            }
                         }
+                        collateralFactor
                     }
                     healthFactor
                     state {

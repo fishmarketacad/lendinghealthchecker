@@ -1118,7 +1118,7 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                                     except (ValueError, TypeError):
                                         pass
                                 
-                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {debt_display} (${format_currency(debt_usd)}){liquidation_str}"
+                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {debt_display} ({format_currency(debt_usd)}){liquidation_str}"
                             else:
                                 # Fallback if raw amount not available
                                 liquidation_str = ""

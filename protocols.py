@@ -1167,9 +1167,14 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             borrow_amount_raw = None
                             if borrow_assets_raw and borrow_assets_raw != '0':
                                 try:
+                                    # borrowAssets from GraphQL is already a string, convert to float
                                     borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
-                                except (ValueError, TypeError):
+                                    logger.debug(f"Converted borrowAssets '{borrow_assets_raw}' with decimals {loan_decimals} to {borrow_amount_raw}")
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Error converting borrowAssets '{borrow_assets_raw}': {e}")
                                     pass
+                            else:
+                                logger.debug(f"borrowAssets is empty or '0': '{borrow_assets_raw}'")
                             
                             markets.append({
                                 'id': market_unique_key,
@@ -1186,7 +1191,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'liquidationPrice': liquidation_price
                             })
                     
-                    # Fetch LLTV from contract for markets where it's missing
+                    # Fetch LLTV and raw borrow amount from contract for markets where they're missing
                     if markets and chain_id == 143:  # Only for Monad
                         try:
                             # Get Web3 connection for Morpho
@@ -1197,15 +1202,50 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             morpho_abi = load_abi('morpho')
                             contract = w3.eth.contract(address=morpho_address, abi=morpho_abi)
                             
+                            address_checksum = w3.to_checksum_address(address)
+                            
                             for market in markets:
+                                # Fetch LLTV from contract if missing
                                 if market.get('lltv') is None:
-                                    # Fetch LLTV from contract
                                     lltv_from_contract = get_morpho_market_lltv(market['id'], contract, w3)
                                     if lltv_from_contract:
                                         market['lltv'] = lltv_from_contract
                                         logger.debug(f"Fetched LLTV from contract for market {market['id']}: {lltv_from_contract:.4f}")
+                                
+                                # Fetch raw borrow amount from contract if missing or 0
+                                if not market.get('borrowAmountRaw') or market.get('borrowAmountRaw') == 0:
+                                    try:
+                                        # Convert market ID to bytes32
+                                        market_id_clean = market['id'].replace('0x', '').lower()
+                                        if len(market_id_clean) == 64:
+                                            market_id_bytes32 = bytes.fromhex(market_id_clean)
+                                            
+                                            # Get position data from contract
+                                            position_data = contract.functions.position(market_id_bytes32, address_checksum).call()
+                                            market_params, market_data, user_position = position_data
+                                            
+                                            # Extract borrow shares and convert to assets
+                                            borrow_shares = user_position[1]
+                                            if borrow_shares > 0:
+                                                total_borrow_assets = market_data[2]
+                                                total_borrow_shares = market_data[3]
+                                                
+                                                if total_borrow_shares > 0:
+                                                    # Convert shares to assets: assets = (shares * total_assets) / total_shares
+                                                    borrow_assets_raw = (borrow_shares * total_borrow_assets) // total_borrow_shares
+                                                    
+                                                    # Get loan token decimals (default to 18)
+                                                    loan_symbol = market.get('loanAsset', '?')
+                                                    loan_decimals = 18  # Default, could query token contract for exact value
+                                                    
+                                                    # Convert to human-readable format
+                                                    borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
+                                                    market['borrowAmountRaw'] = borrow_amount_raw
+                                                    logger.debug(f"Fetched raw borrow amount from contract for market {market['id']}: {borrow_amount_raw:.2f} {loan_symbol}")
+                                    except Exception as e:
+                                        logger.debug(f"Could not fetch raw borrow amount from contract for market {market['id']}: {e}")
                         except Exception as e:
-                            logger.warning(f"Could not fetch LLTV from contract: {e}")
+                            logger.warning(f"Could not fetch data from contract: {e}")
                     
                     if markets:
                         logger.info(f"Found {len(markets)} Morpho markets for {address} on chain {chain_id} via GraphQL API")

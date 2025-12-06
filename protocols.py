@@ -1197,8 +1197,17 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             loan_asset = market.get('loanAsset', {})
                             collateral_asset = market.get('collateralAsset', {})
                             
-                            loan_symbol = loan_asset.get('symbol', '?')
-                            collateral_symbol = collateral_asset.get('symbol', '?')
+                            # Extract symbols - handle both nested object and direct string formats
+                            if isinstance(loan_asset, dict):
+                                loan_symbol = loan_asset.get('symbol', '?')
+                            else:
+                                loan_symbol = str(loan_asset) if loan_asset else '?'
+                            
+                            if isinstance(collateral_asset, dict):
+                                collateral_symbol = collateral_asset.get('symbol', '?')
+                            else:
+                                collateral_symbol = str(collateral_asset) if collateral_asset else '?'
+                            
                             market_name = f"{collateral_symbol}-{loan_symbol}".lower()
                             
                             # 2. Get/Verify LLTV

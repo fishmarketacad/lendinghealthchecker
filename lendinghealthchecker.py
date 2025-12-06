@@ -734,6 +734,8 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
                 'loanAsset': pos_data.debt.symbol,  # For Morpho compatibility (used in build_position_message)
                 'liquidation_price': pos_data.liquidation_price,
                 'liquidation_drop_pct': pos_data.liquidation_drop_pct,
+                'liquidationPrice': pos_data.liquidation_price,  # For Morpho compatibility (camelCase)
+                'liquidationDropPct': pos_data.liquidation_drop_pct,  # For Morpho compatibility (camelCase)
                 'supplyAssetsUsd': pos_data.collateral.usd_value,  # For Morpho compatibility
                 'borrowAssetsUsd': pos_data.debt.usd_value,  # For Morpho compatibility
                 'supplyAmountHuman': pos_data.collateral.amount,  # For Morpho compatibility

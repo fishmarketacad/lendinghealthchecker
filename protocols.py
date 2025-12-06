@@ -458,21 +458,33 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
         
         # Use getAccountEnabledVaultsInfo - this returns all vaults with positions
         try:
+            logger.info(f"Calling getAccountEnabledVaultsInfo with EVC={evc_addr}, account={address_checksum}")
             result = account_lens_contract.functions.getAccountEnabledVaultsInfo(
                 w3.to_checksum_address(evc_addr),
                 address_checksum
             ).call()
             
+            logger.debug(f"Raw result type: {type(result)}, length: {len(result) if hasattr(result, '__len__') else 'N/A'}")
+            logger.debug(f"Result repr: {repr(result)[:500]}")
+            
             # Result structure: (evcAccountInfo, vaultAccountInfo[], accountRewardInfo[])
+            # Web3.py returns tuples, so we access by index
             evc_account_info = result[0]
             vault_account_info_list = result[1]
             account_reward_info_list = result[2]
             
             logger.info(f"Found {len(vault_account_info_list)} vault account infos for {address}")
-            logger.debug(f"Result type: {type(result)}, length: {len(result) if hasattr(result, '__len__') else 'N/A'}")
+            logger.debug(f"EVC account info: {evc_account_info}")
+            logger.debug(f"Vault account info list length: {len(vault_account_info_list) if vault_account_info_list else 0}")
             
             if not vault_account_info_list:
-                logger.info(f"No vault account infos returned for {address}")
+                logger.warning(f"No vault account infos returned for {address}. EVC account info: {evc_account_info}")
+                # Check if account has enabled collaterals/controllers
+                if hasattr(evc_account_info, '__len__') and len(evc_account_info) > 8:
+                    enabled_collaterals = evc_account_info[8] if len(evc_account_info) > 8 else []
+                    enabled_controllers = evc_account_info[9] if len(evc_account_info) > 9 else []
+                    logger.info(f"Account enabled collaterals: {enabled_collaterals}")
+                    logger.info(f"Account enabled controllers: {enabled_controllers}")
                 return []
             
             for idx, vault_info in enumerate(vault_account_info_list):

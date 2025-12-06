@@ -55,6 +55,8 @@ echo "Copying files..."
 cp -r lendinghealthchecker.py "${DEPLOY_DIR}/"
 cp -r protocols.py "${DEPLOY_DIR}/"
 cp -r rebalancing.py "${DEPLOY_DIR}/"
+cp -r protocol_strategy.py "${DEPLOY_DIR}/"
+cp -r protocol_strategies_impl.py "${DEPLOY_DIR}/"
 cp -r requirements.txt "${DEPLOY_DIR}/"
 
 # CRITICAL: Explicitly exclude user data JSON file from being copied

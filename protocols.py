@@ -641,15 +641,20 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                     continue
                 
                 # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
-                logger.debug(f"account_info length: {len(account_info) if hasattr(account_info, '__len__') else 'N/A'}")
+                logger.info(f"account_info length: {len(account_info) if hasattr(account_info, '__len__') else 'N/A'}")
+                logger.debug(f"account_info[0] (evcAccountInfo): {account_info[0] if len(account_info) > 0 else 'N/A'}")
                 vault_account_info = account_info[1]  # VaultAccountInfo struct
-                logger.debug(f"vault_account_info type: {type(vault_account_info)}, length: {len(vault_account_info) if hasattr(vault_account_info, '__len__') else 'N/A'}")
+                logger.info(f"vault_account_info type: {type(vault_account_info)}, length: {len(vault_account_info) if hasattr(vault_account_info, '__len__') else 'N/A'}")
+                logger.debug(f"Full vault_account_info: {vault_account_info}")
                 
                 # Check if user has a position (borrowed > 0 or shares > 0)
-                borrowed = vault_account_info[7]  # borrowed amount
-                shares = vault_account_info[5]  # shares
+                # VaultAccountInfo structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
+                borrowed = vault_account_info[7] if len(vault_account_info) > 7 else 0  # borrowed amount
+                shares = vault_account_info[5] if len(vault_account_info) > 5 else 0  # shares
+                assets_account = vault_account_info[4] if len(vault_account_info) > 4 else 0  # assetsAccount
+                assets = vault_account_info[6] if len(vault_account_info) > 6 else 0  # assets
                 
-                logger.info(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}")
+                logger.info(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}, assetsAccount={assets_account}, assets={assets}")
                 
                 if borrowed == 0 and shares == 0:
                     logger.debug(f"No position in isolated vault {vault_address_checksum} (borrowed=0, shares=0)")

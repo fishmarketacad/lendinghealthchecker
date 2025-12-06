@@ -324,9 +324,10 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     # Use market_id as combination of MarketManager and cToken for unique identification
                     unique_market_id = f"{market_manager_found}_{cToken}"
                     
+                    # Check if we already have a position with this exact (MarketManager, cToken) combination
                     if position_key not in seen_positions:
                         # First time seeing this (MarketManager, cToken) combination
-                        logger.info(f"Curvance: ✅ Adding NEW position - MM: {market_manager_found}, cToken: {cToken}, symbol: {collateral_symbol}, health: {health_factor:.3f}")
+                        logger.info(f"Curvance: ✅ Adding NEW position - MM: {market_manager_found}, cToken: {cToken}, symbol: {collateral_symbol}, collateral={collateral_amount:.4f}, debt={debt_amount:.4f}, health: {health_factor:.3f}")
                         seen_positions[position_key] = PositionData(
                             protocol_name="Curvance",
                             market_name=f"Curvance Market ({collateral_symbol})",

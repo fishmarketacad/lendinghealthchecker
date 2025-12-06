@@ -934,13 +934,14 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
     return "\n\n".join(messages)
 
 # Helper function to build full position message with collateral/debt details
-async def build_position_message(chat_id: str, addresses: List[str]) -> Optional[str]:
+async def build_position_message(chat_id: str, addresses: List[str], filter_protocol: Optional[str] = None) -> Optional[str]:
     """
     Build a detailed message showing all positions with collateral and debt values.
     
     Args:
         chat_id: Chat ID
         addresses: List of addresses to check
+        filter_protocol: Optional protocol ID to filter results
     
     Returns:
         Formatted message string with full position details, or None if no addresses
@@ -1212,6 +1213,10 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Show full position details including collateral and debt values.
+    Supports optional filters:
+    - /position: all protocols, all addresses
+    - /position <protocol>: specific protocol, all addresses
+    - /position <address>: all protocols, specific address
     """
     chat_id = str(update.effective_chat.id)
     logger.info(f"/position called by chat_id: {chat_id}")
@@ -1229,11 +1234,50 @@ async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("No addresses to check.")
         return
     
+    # Parse arguments
+    filter_protocol = None
+    filter_address = None
+    
+    if context.args and len(context.args) > 0:
+        arg = context.args[0].lower()
+        
+        # Check if it's a protocol ID
+        if arg in PROTOCOL_CONFIG:
+            filter_protocol = arg
+            logger.info(f"Filtering /position by protocol: {filter_protocol}")
+        else:
+            # Check if it's a valid address format
+            first_protocol = list(protocol_connections.values())[0]
+            if first_protocol['w3'].is_address(arg):
+                # Check if this address is being monitored
+                if arg in addresses:
+                    filter_address = arg
+                    logger.info(f"Filtering /position by address: {filter_address}")
+                else:
+                    await update.message.reply_text(
+                        f"Address {arg} is not being monitored.\n"
+                        f"Use /add {arg} <threshold> to start monitoring it."
+                    )
+                    return
+            else:
+                await update.message.reply_text(
+                    f"Invalid argument: {arg}\n\n"
+                    "Usage:\n"
+                    "  /position - Show all protocols for all addresses\n"
+                    "  /position <protocol> - Show specific protocol (e.g., /position morpho)\n"
+                    "  /position <address> - Show specific address\n\n"
+                    f"Supported protocols: {', '.join(PROTOCOL_CONFIG.keys())}"
+                )
+                return
+    
     # Send "checking..." message and store it for deletion
     checking_msg = await update.message.reply_text("🔍 Checking positions...")
     
-    # Build full position message with collateral/debt details
-    final_message = await build_position_message(chat_id, addresses)
+    # Filter addresses if needed
+    addresses_to_check = [filter_address] if filter_address else addresses
+    
+    # Build full position message with optional protocol filter
+    final_message = await build_position_message(chat_id, addresses_to_check, filter_protocol=filter_protocol)
     
     # Delete the "checking..." message
     try:
@@ -1246,7 +1290,12 @@ async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(f"Sending /position response from instance {INSTANCE_ID}, chat_id: {chat_id}")
         await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)
     else:
-        await update.message.reply_text("No active positions found.")
+        filter_msg = ""
+        if filter_protocol:
+            filter_msg = f" for {PROTOCOL_CONFIG[filter_protocol]['name']}"
+        elif filter_address:
+            filter_msg = f" for {filter_address}"
+        await update.message.reply_text(f"No active positions found{filter_msg}.")
 
 # Function to handle /protocols command
 async def list_protocols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

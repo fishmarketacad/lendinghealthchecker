@@ -84,7 +84,7 @@ PROTOCOL_CONFIG = {
         'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
         'health_factor_index': None,  # Will need custom parsing
         'health_factor_divisor': 1e18,
-        'abi': protocols.load_abi('accountlens')  # Use AccountLens ABI
+        'abi': protocols.load_abi('AccountLens')  # Use AccountLens ABI (case-sensitive)
     }
 }
 

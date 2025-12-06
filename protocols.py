@@ -914,7 +914,7 @@ def get_morpho_user_vaults(address: str, chain_id: int = 143) -> List[Dict]:
             MORPHO_GRAPHQL_URL,
             json={"query": query, "variables": variables},
             headers={"Content-Type": "application/json"},
-            timeout=10
+            timeout=30
         )
         
         if response.status_code == 200:
@@ -1157,7 +1157,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
             MORPHO_GRAPHQL_URL,
             json={"query": query, "variables": variables},
             headers={"Content-Type": "application/json"},
-            timeout=10
+            timeout=30
         )
         
         if response.status_code == 200:

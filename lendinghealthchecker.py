@@ -990,6 +990,10 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                     liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
                     threshold_str = f"{threshold:.3f}".rstrip('0').rstrip('.')
                     
+                    # Ensure liquidation_drop_pct is not None
+                    if liquidation_drop_pct is None:
+                        liquidation_drop_pct = 0
+                    
                     # Extract collateral and debt values
                     collateral_usd = None
                     debt_usd = None
@@ -1137,7 +1141,7 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             if liquidation_price:
                                 try:
                                     liq_price_float = float(liquidation_price)
-                                    drop_pct = liquidation_drop_pct if liquidation_drop_pct is not None else None
+                                    drop_pct = liquidation_drop_pct_from_market if liquidation_drop_pct_from_market is not None else None
                                     
                                     # Format liquidation price with commas
                                     liq_price_formatted = f"${liq_price_float:,.2f}"
@@ -1146,7 +1150,8 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                                         liquidation_str = f"\nLiquidation price: {liq_price_formatted} ({drop_pct:.1f}% drop to liquidation)"
                                     else:
                                         liquidation_str = f"\nLiquidation price: {liq_price_formatted}"
-                                except (ValueError, TypeError):
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Error formatting liquidation price: {e}")
                                     pass
                             
                             tvl_debt_str = f"\nCollateral: {collateral_str} | Debt: {debt_str}{liquidation_str}"
@@ -1157,7 +1162,10 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                     if protocol_id == 'morpho' and market_info:
                         market_name = market_info.get('name', 'Unknown').upper()
                         market_url = f"https://app.morpho.org/monad/market/{market_info['id']}/{market_info['name']}?subTab=yourPosition"
-                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                        # Calculate liquidation_drop_pct if not already calculated
+                        if liquidation_drop_pct is None:
+                            liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f}, Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"

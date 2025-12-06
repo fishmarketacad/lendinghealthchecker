@@ -710,6 +710,8 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
             
             # Convert PositionData to dict format (for backward compatibility)
             market_info = {
+                'id': pos_data.market_id,  # Add market ID for URL generation
+                'name': pos_data.market_name,  # Add market name for URL generation
                 'collateral_usd': pos_data.collateral.usd_value,
                 'debt_usd': pos_data.debt.usd_value,
                 'collateral_amount': pos_data.collateral.amount,
@@ -717,7 +719,12 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
                 'collateral_symbol': pos_data.collateral.symbol,
                 'debt_symbol': pos_data.debt.symbol,
                 'liquidation_price': pos_data.liquidation_price,
-                'liquidation_drop_pct': pos_data.liquidation_drop_pct
+                'liquidation_drop_pct': pos_data.liquidation_drop_pct,
+                'supplyAssetsUsd': pos_data.collateral.usd_value,  # For Morpho compatibility
+                'borrowAssetsUsd': pos_data.debt.usd_value,  # For Morpho compatibility
+                'supplyAmountHuman': pos_data.collateral.amount,  # For Morpho compatibility
+                'borrowAmountHuman': pos_data.debt.amount,  # For Morpho compatibility
+                'lltv': None  # Will be fetched if needed
             }
             
             positions.append({
@@ -995,7 +1002,8 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                     # Format message - reordered: Current Health first, then threshold
                     if protocol_id == 'morpho' and market_info:
                         market_name = market_info.get('name', 'Unknown').upper()
-                        market_url = f"https://app.morpho.org/monad/market/{market_info['id']}/{market_info['name']}?subTab=yourPosition"
+                        market_id_for_url = market_info.get('id') or market_id or 'unknown'
+                        market_url = f"https://app.morpho.org/monad/market/{market_id_for_url}/{market_info.get('name', 'unknown')}?subTab=yourPosition"
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     elif protocol_id == 'curvance' and market_id:
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
@@ -1235,7 +1243,8 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                     # Format message based on protocol
                     if protocol_id == 'morpho' and market_info:
                         market_name = market_info.get('name', 'Unknown').upper()
-                        market_url = f"https://app.morpho.org/monad/market/{market_info['id']}/{market_info['name']}?subTab=yourPosition"
+                        market_id_for_url = market_info.get('id') or market_id or 'unknown'
+                        market_url = f"https://app.morpho.org/monad/market/{market_id_for_url}/{market_info.get('name', 'unknown')}?subTab=yourPosition"
                         # Calculate liquidation_drop_pct if not already calculated
                         if liquidation_drop_pct is None:
                             liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0

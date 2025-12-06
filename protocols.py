@@ -1108,6 +1108,7 @@ def get_morpho_market_lltv(market_id: str, contract, w3) -> Optional[float]:
 def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     """
     Get list of markets where user has positions using Morpho's GraphQL API.
+    Calculates Liquidation Price and human-readable token amounts.
     
     Args:
         address: User's wallet address
@@ -1118,9 +1119,12 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     """
     markets = []
     
+    # Initialize Web3 early so it's available for both main logic and fallbacks
+    rpc_url = os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz')
+    w3 = Web3(Web3.HTTPProvider(rpc_url))
+    
     try:
-        # Simplified query - only fetch fields that are reliably available
-        # Note: Some fields like lltv, liquidationPrice, decimals, price may not be available for Monad
+        # GraphQL Query including token addresses to fetch decimals
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1131,11 +1135,17 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                 marketPositions {
                     market {
                         uniqueKey
+                        id
+                        lltv
                         loanAsset {
+                            address
                             symbol
+                            decimals
                         }
                         collateralAsset {
+                            address
                             symbol
+                            decimals
                         }
                     }
                     healthFactor

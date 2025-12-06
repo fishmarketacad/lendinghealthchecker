@@ -430,6 +430,49 @@ KNOWN_EULER_VAULTS = [
     # Add more as discovered
 ]
 
+# governedPerspective contract address (for getting verified vaults)
+# TODO: Get actual address from Euler team
+GOVERNED_PERSPECTIVE_ADDRESS = None  # Will be set when we get the address
+
+def get_euler_verified_vaults(w3, perspective_address: str = None) -> List[str]:
+    """
+    Get list of verified vault addresses from governedPerspective contract.
+    
+    Args:
+        w3: Web3 instance
+        perspective_address: governedPerspective contract address (optional)
+    
+    Returns:
+        List of verified vault addresses
+    """
+    if not perspective_address:
+        logger.debug("No governedPerspective address provided, skipping verified vault query")
+        return []
+    
+    try:
+        # Simple ABI for verifiedArray() function
+        perspective_abi = [
+            {
+                'inputs': [],
+                'name': 'verifiedArray',
+                'outputs': [{'internalType': 'address[]', 'name': '', 'type': 'address[]'}],
+                'stateMutability': 'view',
+                'type': 'function'
+            }
+        ]
+        
+        perspective_contract = w3.eth.contract(
+            address=w3.to_checksum_address(perspective_address),
+            abi=perspective_abi
+        )
+        
+        verified_vaults = perspective_contract.functions.verifiedArray().call()
+        logger.info(f"Retrieved {len(verified_vaults)} verified vaults from governedPerspective")
+        return [v.lower() for v in verified_vaults]
+    except Exception as e:
+        logger.warning(f"Failed to query governedPerspective for verified vaults: {e}")
+        return []
+
 def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, evc_address: str = None) -> List[Dict]:
     """
     Get list of Euler vaults where user has positions using AccountLens.
@@ -494,7 +537,7 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                     enabled_controllers = evc_account_info[9] if len(evc_account_info) > 9 else []
                     logger.info(f"Account enabled collaterals: {enabled_collaterals}")
                     logger.info(f"Account enabled controllers: {enabled_controllers}")
-                return []
+                # Don't return early - continue to check isolated vaults
             
             for idx, vault_info in enumerate(vault_account_info_list):
                 try:
@@ -568,17 +611,32 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
             logger.debug(traceback.format_exc())
         
         # Also check known isolated vault addresses using getAccountInfo
-        logger.info(f"Checking {len(KNOWN_EULER_VAULTS)} known isolated vaults for {address}")
-        for vault_address in KNOWN_EULER_VAULTS:
+        vaults_to_check = list(KNOWN_EULER_VAULTS)
+        
+        # Optionally query governedPerspective for verified vaults
+        # TODO: Add governedPerspective address to config when available
+        if GOVERNED_PERSPECTIVE_ADDRESS:
+            verified_vaults = get_euler_verified_vaults(w3, GOVERNED_PERSPECTIVE_ADDRESS)
+            for vault_addr in verified_vaults:
+                if vault_addr not in [v.lower() for v in vaults_to_check]:
+                    vaults_to_check.append(vault_addr)
+        
+        logger.info(f"Checking {len(vaults_to_check)} isolated vaults for {address} ({len(KNOWN_EULER_VAULTS)} known + {len(vaults_to_check) - len(KNOWN_EULER_VAULTS)} verified)")
+        for vault_address in vaults_to_check:
             try:
                 vault_address_checksum = w3.to_checksum_address(vault_address)
-                logger.debug(f"Checking isolated vault {vault_address_checksum} using getAccountInfo")
+                logger.info(f"Checking isolated vault {vault_address_checksum} using getAccountInfo for {address_checksum}")
                 
                 # Use getAccountInfo for this specific vault
-                account_info = account_lens_contract.functions.getAccountInfo(
-                    address_checksum,
-                    vault_address_checksum
-                ).call()
+                try:
+                    account_info = account_lens_contract.functions.getAccountInfo(
+                        address_checksum,
+                        vault_address_checksum
+                    ).call()
+                    logger.debug(f"getAccountInfo succeeded for vault {vault_address_checksum}")
+                except Exception as e_call:
+                    logger.debug(f"getAccountInfo failed for vault {vault_address_checksum}: {e_call}")
+                    continue
                 
                 # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
                 vault_account_info = account_info[1]  # VaultAccountInfo struct
@@ -587,13 +645,15 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 borrowed = vault_account_info[7]  # borrowed amount
                 shares = vault_account_info[5]  # shares
                 
+                logger.debug(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}")
+                
                 if borrowed == 0 and shares == 0:
-                    logger.debug(f"No position in isolated vault {vault_address_checksum}")
+                    logger.debug(f"No position in isolated vault {vault_address_checksum} (borrowed=0, shares=0)")
                     continue
                 
                 # Skip if no debt (supply-only position)
                 if borrowed == 0:
-                    logger.debug(f"Isolated vault {vault_address_checksum}: supply-only (no debt)")
+                    logger.debug(f"Isolated vault {vault_address_checksum}: supply-only (no debt, shares={shares})")
                     continue
                 
                 # Get liquidity info

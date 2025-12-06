@@ -1276,11 +1276,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                     # Fetch LLTV and raw borrow amount from contract for markets where they're missing
                     if markets and chain_id == 143:  # Only for Monad
                         try:
-                            # Get Web3 connection for Morpho
-                            from web3 import Web3
-                            rpc_url = os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz')
+                            # Use the w3 instance already initialized at function start
                             morpho_address = os.environ.get('MORPHO_BLUE_ADDRESS', '0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee')
-                            w3 = Web3(Web3.HTTPProvider(rpc_url))
                             morpho_abi = load_abi('morpho')
                             contract = w3.eth.contract(address=morpho_address, abi=morpho_abi)
                             

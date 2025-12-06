@@ -1247,38 +1247,91 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                         market['lltv'] = lltv_from_contract
                                         logger.debug(f"Fetched LLTV from contract for market {market['id']}: {lltv_from_contract:.4f}")
                                 
-                                # Fetch raw borrow amount from contract if missing or 0
-                                if not market.get('borrowAmountRaw') or market.get('borrowAmountRaw') == 0:
-                                    try:
-                                        # Convert market ID to bytes32
-                                        market_id_clean = market['id'].replace('0x', '').lower()
-                                        if len(market_id_clean) == 64:
-                                            market_id_bytes32 = bytes.fromhex(market_id_clean)
+                                # Fetch raw borrow amount, collateral amount, and calculate liquidation price from contract
+                                try:
+                                    # Convert market ID to bytes32
+                                    market_id_clean = market['id'].replace('0x', '').lower()
+                                    if len(market_id_clean) == 64:
+                                        market_id_bytes32 = bytes.fromhex(market_id_clean)
+                                        
+                                        # Get position data and market params from contract
+                                        position_data = contract.functions.position(market_id_bytes32, address_checksum).call()
+                                        market_params_tuple, market_data, user_position = position_data
+                                        
+                                        # Get market params to get token addresses
+                                        market_params = contract.functions.idToMarketParams(market_id_bytes32).call()
+                                        loan_token_address = market_params[0]
+                                        collateral_token_address = market_params[1]
+                                        
+                                        # Extract position data
+                                        supply_shares = user_position[0]
+                                        borrow_shares = user_position[1]
+                                        collateral_raw = user_position[2]  # This is collateral amount in raw units
+                                        
+                                        # Convert supply shares to supply assets (collateral)
+                                        total_supply_assets = market_data[0]
+                                        total_supply_shares = market_data[1]
+                                        if total_supply_shares > 0 and supply_shares > 0:
+                                            supply_assets_raw = (supply_shares * total_supply_assets) // total_supply_shares
                                             
-                                            # Get position data from contract
-                                            position_data = contract.functions.position(market_id_bytes32, address_checksum).call()
-                                            market_params, market_data, user_position = position_data
+                                            # Get collateral token decimals dynamically
+                                            collateral_decimals = get_token_decimals(collateral_token_address, w3)
                                             
-                                            # Extract borrow shares and convert to assets
-                                            borrow_shares = user_position[1]
-                                            if borrow_shares > 0:
-                                                total_borrow_assets = market_data[2]
-                                                total_borrow_shares = market_data[3]
+                                            # Convert to human-readable format
+                                            collateral_amount = float(supply_assets_raw) / (10 ** collateral_decimals)
+                                            market['collateralAmount'] = collateral_amount
+                                            market['collateralAmountRaw'] = supply_assets_raw
+                                            logger.debug(f"Fetched collateral amount from contract: {collateral_amount:.4f} (decimals: {collateral_decimals})")
+                                        
+                                        # Extract borrow shares and convert to assets
+                                        if borrow_shares > 0:
+                                            total_borrow_assets = market_data[2]
+                                            total_borrow_shares = market_data[3]
+                                            
+                                            if total_borrow_shares > 0:
+                                                # Convert shares to assets: assets = (shares * total_assets) / total_shares
+                                                borrow_assets_raw = (borrow_shares * total_borrow_assets) // total_borrow_shares
                                                 
-                                                if total_borrow_shares > 0:
-                                                    # Convert shares to assets: assets = (shares * total_assets) / total_shares
-                                                    borrow_assets_raw = (borrow_shares * total_borrow_assets) // total_borrow_shares
+                                                # Get loan token decimals dynamically
+                                                loan_decimals = get_token_decimals(loan_token_address, w3)
+                                                
+                                                # Convert to human-readable format
+                                                borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
+                                                market['borrowAmountRaw'] = borrow_amount_raw
+                                                logger.debug(f"Fetched raw borrow amount from contract: {borrow_amount_raw:.2f} (decimals: {loan_decimals})")
+                                        
+                                        # Calculate liquidation price if we have the necessary data
+                                        if market.get('healthFactor') and market.get('lltv') and market.get('borrowAssetsUsd') and market.get('supplyAssetsUsd') and market.get('collateralAmount'):
+                                            try:
+                                                hf = float(market['healthFactor'])
+                                                lltv = float(market['lltv'])
+                                                debt_usd = float(market['borrowAssetsUsd'])
+                                                collateral_usd = float(market['supplyAssetsUsd'])
+                                                collateral_amount = float(market['collateralAmount'])
+                                                
+                                                if hf > 0 and lltv > 0 and debt_usd > 0 and collateral_usd > 0 and collateral_amount > 0:
+                                                    # At liquidation: collateral_value × LLTV = debt_value
+                                                    # So: collateral_amount × liquidation_price × LLTV = debt_usd
+                                                    # Therefore: liquidation_price = debt_usd / (collateral_amount × LLTV)
+                                                    liquidation_price = debt_usd / (collateral_amount * lltv)
+                                                    market['liquidationPrice'] = liquidation_price
                                                     
-                                                    # Get loan token decimals (default to 18)
-                                                    loan_symbol = market.get('loanAsset', '?')
-                                                    loan_decimals = 18  # Default, could query token contract for exact value
+                                                    # Calculate current collateral price
+                                                    current_price = collateral_usd / collateral_amount
                                                     
-                                                    # Convert to human-readable format
-                                                    borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
-                                                    market['borrowAmountRaw'] = borrow_amount_raw
-                                                    logger.debug(f"Fetched raw borrow amount from contract for market {market['id']}: {borrow_amount_raw:.2f} {loan_symbol}")
-                                    except Exception as e:
-                                        logger.debug(f"Could not fetch raw borrow amount from contract for market {market['id']}: {e}")
+                                                    # Calculate percentage drop to liquidation
+                                                    if current_price > 0:
+                                                        drop_pct = ((current_price - liquidation_price) / current_price) * 100
+                                                        market['liquidationDropPct'] = drop_pct
+                                                        logger.debug(f"Calculated liquidation price: ${liquidation_price:.2f}, drop: {drop_pct:.1f}%")
+                                            except Exception as e:
+                                                logger.debug(f"Could not calculate liquidation price: {e}")
+                                                import traceback
+                                                logger.debug(traceback.format_exc())
+                                except Exception as e:
+                                    logger.debug(f"Could not fetch position data from contract for market {market['id']}: {e}")
+                                    import traceback
+                                    logger.debug(traceback.format_exc())
                         except Exception as e:
                             logger.warning(f"Could not fetch data from contract: {e}")
                     

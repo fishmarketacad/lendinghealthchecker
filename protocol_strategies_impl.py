@@ -113,8 +113,9 @@ class MorphoStrategy(LendingProtocolStrategy):
                 # Get liquidation info
                 liquidation_price = market.get('liquidationPrice')
                 liquidation_drop_pct = market.get('liquidationDropPct')
-                liquidation_price = float(liquidation_price) if liquidation_price is not None and liquidation_price > 0 else None
-                liquidation_drop_pct = float(liquidation_drop_pct) if liquidation_drop_pct is not None and liquidation_drop_pct > 0 else None
+                # Convert to float, handling None and 0 values
+                liquidation_price = float(liquidation_price) if liquidation_price is not None and float(liquidation_price) > 0 else None
+                liquidation_drop_pct = float(liquidation_drop_pct) if liquidation_drop_pct is not None and float(liquidation_drop_pct) > 0 else None
                 
                 positions.append(PositionData(
                     protocol_name="Morpho",
@@ -133,8 +134,8 @@ class MorphoStrategy(LendingProtocolStrategy):
                         usd_value=borrow_usd,
                         decimals=loan_decimals
                     ),
-                    liquidation_price=liquidation_price if liquidation_price > 0 else None,
-                    liquidation_drop_pct=liquidation_drop_pct if liquidation_drop_pct > 0 else None,
+                    liquidation_price=liquidation_price,  # Already None if invalid
+                    liquidation_drop_pct=liquidation_drop_pct,  # Already None if invalid
                     app_url=self.app_url
                 ))
         except Exception as e:

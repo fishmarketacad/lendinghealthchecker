@@ -1136,25 +1136,15 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             
                             # Extract market details
                             market_data = pos.get('market', {})
-                            collateral_factor = market_data.get('collateralFactor')
-                            collateral_asset_data = market_data.get('collateralAsset', {})
-                            collateral_price_data = collateral_asset_data.get('price', {})
-                            collateral_price = collateral_price_data.get('value') if collateral_price_data else None
-                            collateral_decimals = collateral_asset_data.get('decimals', 18)
+                            collateral_factor = market_data.get('collateralFactor')  # May be None if simplified query was used
                             
-                            # Get collateral amount from state
+                            # Get collateral amount from state (if available)
                             state_data = pos.get('state', {})
                             collateral_raw = state_data.get('collateral') if state_data else None
                             
-                            # Calculate collateral USD if we have raw amount and price
+                            # Note: Price and decimals removed from query to prevent timeout
+                            # Collateral USD will be calculated from health_factor and collateral_factor instead
                             collateral_usd_calculated = None
-                            if collateral_raw and collateral_price:
-                                try:
-                                    # collateral_raw is a string, convert to float
-                                    collateral_amount = float(collateral_raw) / (10 ** collateral_decimals)
-                                    collateral_usd_calculated = collateral_amount * float(collateral_price)
-                                except (ValueError, TypeError) as e:
-                                    logger.debug(f"Error calculating collateral USD: {e}")
                             
                             markets.append({
                                 'id': market_unique_key,

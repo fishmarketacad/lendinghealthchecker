@@ -1125,7 +1125,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     
     try:
         # GraphQL Query including token addresses to fetch decimals
-        # Note: collateralAssets is for borrowers (collateral posted), supplyAssets is for lenders (loan token supplied)
+        # Note: Morpho GraphQL API uses 'collateral' and 'collateralUsd' (not collateralAssets)
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1154,8 +1154,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                     borrowAssetsUsd
                     supplyAssets
                     supplyAssetsUsd
-                    collateralAssets
-                    collateralAssetsUsd
+                    collateral
+                    collateralUsd
                 }
             }
         }
@@ -1237,18 +1237,20 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             borrow_raw = float(pos.get('borrowAssets', 0) or 0)
                             borrow_human = borrow_raw / (10 ** loan_decimals)
                             
-                            # Collateral: Prioritize collateralAssets (for borrowers) over supplyAssets (for lenders)
-                            coll_raw_graph = pos.get('collateralAssets')
+                            # Collateral: Prioritize collateral (for borrowers) over supplyAssets (for lenders)
+                            # GraphQL API uses 'collateral' field (not 'collateralAssets')
+                            coll_raw_graph = pos.get('collateral')
                             if coll_raw_graph and float(coll_raw_graph) > 0:
                                 collateral_human = float(coll_raw_graph) / (10 ** coll_decimals)
                             else:
-                                # Fallback to supplyAssets if collateralAssets is missing/zero (for lenders)
+                                # Fallback to supplyAssets if collateral is missing/zero (for lenders)
                                 supply_raw = float(pos.get('supplyAssets', 0) or 0)
                                 collateral_human = supply_raw / (10 ** coll_decimals)
                             
-                            # USD Values: Prioritize collateralAssetsUsd over supplyAssetsUsd
+                            # USD Values: Prioritize collateralUsd over supplyAssetsUsd
+                            # GraphQL API uses 'collateralUsd' field (not 'collateralAssetsUsd')
                             borrow_usd = float(pos.get('borrowAssetsUsd', 0) or 0)
-                            collateral_usd = float(pos.get('collateralAssetsUsd', 0) or 0)
+                            collateral_usd = float(pos.get('collateralUsd', 0) or 0)
                             if collateral_usd == 0:
                                 collateral_usd = float(pos.get('supplyAssetsUsd', 0) or 0)
                             

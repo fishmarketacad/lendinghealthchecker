@@ -999,44 +999,43 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                     debt_amount = None
                     
                     if protocol_id == 'morpho' and market_info:
-                        # Morpho GraphQL returns supplyAssetsUsd and borrowAssetsUsd
-                        # But supplyAssetsUsd might be 0 if collateral is in vault shares (non-stablecoin)
-                        # Try multiple methods to get accurate collateral value
+                        # Morpho: Health Factor = (Collateral Value × LLTV) / Total Borrowed Amount
+                        # So: Collateral Value = (Health Factor × Total Borrowed Amount) / LLTV
                         collateral_usd = market_info.get('supplyAssetsUsd', 0)
                         debt_usd = market_info.get('borrowAssetsUsd', 0)
+                        lltv = market_info.get('lltv')  # Liquidation LTV (e.g., 0.86 for 86%)
                         
-                        # Method 1: Use calculated collateral USD from raw amount and price (most accurate)
-                        if collateral_usd == 0:
-                            collateral_usd_calculated = market_info.get('collateralUsdCalculated')
-                            if collateral_usd_calculated:
-                                collateral_usd = collateral_usd_calculated
-                                logger.debug(f"Using calculated Morpho collateral USD: ${collateral_usd:.2f}")
+                        # Use raw borrow amount if available (more accurate for accrual)
+                        borrow_amount_raw = market_info.get('borrowAmountRaw')
+                        if borrow_amount_raw:
+                            # Convert raw amount to USD using loan asset price if needed
+                            # For now, use borrowAssetsUsd but we'll display raw amount separately
+                            pass
                         
-                        # Method 2: Calculate from health factor and collateral factor
-                        # Health factor = (collateral_value * collateral_factor) / debt_value
-                        # So: collateral_value = (health_factor * debt_value) / collateral_factor
+                        # Calculate collateral from health factor and LLTV if supplyAssetsUsd is 0
+                        if collateral_usd == 0 and debt_usd > 0 and health_factor and lltv:
+                            try:
+                                lltv_float = float(lltv)
+                                if lltv_float > 0:
+                                    # Formula: Collateral = (HF × Debt) / LLTV
+                                    collateral_usd = (float(debt_usd) * float(health_factor)) / lltv_float
+                                    logger.debug(f"Calculated Morpho collateral: (${debt_usd} × {health_factor}) / {lltv_float} = ${collateral_usd:.2f}")
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Error calculating collateral from LLTV: {e}")
+                        
+                        # Fallback if LLTV not available
                         if collateral_usd == 0 and debt_usd > 0 and health_factor:
-                            collateral_factor = market_info.get('collateralFactor')
-                            if collateral_factor:
-                                try:
-                                    # collateral_factor is typically a decimal (e.g., 0.75 for 75% LTV)
-                                    collateral_factor_float = float(collateral_factor)
-                                    if collateral_factor_float > 0:
-                                        collateral_usd = (float(debt_usd) * float(health_factor)) / collateral_factor_float
-                                        logger.debug(f"Calculated Morpho collateral from HF and CF: ${debt_usd} * {health_factor} / {collateral_factor_float} = ${collateral_usd:.2f}")
-                                except (ValueError, TypeError) as e:
-                                    logger.debug(f"Error calculating collateral from collateral factor: {e}")
-                            
-                            # Method 3: Fallback - estimate with typical collateral factor (0.75-0.85)
-                            if collateral_usd == 0:
-                                try:
-                                    # Use average collateral factor of 0.80 as fallback
-                                    estimated_cf = 0.80
-                                    collateral_usd = (float(debt_usd) * float(health_factor)) / estimated_cf
-                                    logger.debug(f"Estimated Morpho collateral with default CF: ${debt_usd} * {health_factor} / {estimated_cf} = ${collateral_usd:.2f}")
-                                except (ValueError, TypeError) as e:
-                                    logger.debug(f"Could not estimate Morpho collateral: {e}")
-                                    collateral_usd = 0
+                            try:
+                                # Use estimated LLTV of 0.80 (80%) as fallback
+                                estimated_lltv = 0.80
+                                collateral_usd = (float(debt_usd) * float(health_factor)) / estimated_lltv
+                                logger.debug(f"Estimated Morpho collateral with default LLTV: (${debt_usd} × {health_factor}) / {estimated_lltv} = ${collateral_usd:.2f}")
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Could not estimate Morpho collateral: {e}")
+                                collateral_usd = 0
+                        
+                        # Store liquidation price if available
+                        liquidation_price = market_info.get('liquidationPrice')
                     elif protocol_id == 'neverland' and market_info:
                         collateral_usd = market_info.get('collateral_usd', 0)
                         debt_usd = market_info.get('debt_usd', 0)

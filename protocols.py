@@ -1032,7 +1032,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     markets = []
     
     try:
-        # Original working query - simple and reliable
+        # Query with LLTV and liquidation price fields
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1045,16 +1045,26 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                         uniqueKey
                         loanAsset {
                             symbol
+                            decimals
+                            price {
+                                value
+                            }
                         }
                         collateralAsset {
                             symbol
+                            decimals
+                            price {
+                                value
+                            }
                         }
+                        lltv
                     }
                     healthFactor
                     borrowAssets
                     borrowAssetsUsd
                     supplyAssets
                     supplyAssetsUsd
+                    liquidationPrice
                 }
             }
         }
@@ -1094,16 +1104,39 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             collateral_symbol = collateral_asset.get('symbol', '?')
                             market_name = f"{collateral_symbol}-{loan_symbol}".lower()
                             
+                            # Extract market details
+                            market_data = pos.get('market', {})
+                            lltv = market_data.get('lltv')  # Liquidation LTV (e.g., 0.86 for 86%)
+                            
+                            # Get liquidation price if available
+                            liquidation_price = pos.get('liquidationPrice')
+                            
+                            # Get raw borrow amount (for accurate debt display with accrual)
+                            borrow_assets_raw = pos.get('borrowAssets', '0')
+                            loan_asset_data = market_data.get('loanAsset', {})
+                            loan_decimals = loan_asset_data.get('decimals', 18)
+                            
+                            # Calculate raw borrow amount in human-readable format
+                            borrow_amount_raw = None
+                            if borrow_assets_raw and borrow_assets_raw != '0':
+                                try:
+                                    borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
+                                except (ValueError, TypeError):
+                                    pass
+                            
                             markets.append({
                                 'id': market_unique_key,
                                 'name': market_name,
                                 'loanAsset': loan_symbol,
                                 'collateralAsset': collateral_symbol,
                                 'healthFactor': pos.get('healthFactor'),
-                                'borrowAssets': pos.get('borrowAssets', '0'),
+                                'borrowAssets': borrow_assets_raw,
                                 'borrowAssetsUsd': pos.get('borrowAssetsUsd', 0),
+                                'borrowAmountRaw': borrow_amount_raw,  # Human-readable borrow amount (includes accrual)
                                 'supplyAssets': pos.get('supplyAssets', '0'),
-                                'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0)
+                                'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0),
+                                'lltv': lltv,  # Liquidation LTV (e.g., 0.86)
+                                'liquidationPrice': liquidation_price
                             })
                     
                     if markets:

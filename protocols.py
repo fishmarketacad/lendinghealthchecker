@@ -672,21 +672,50 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 
                 logger.info(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}, assetsAccount={assets_account}, assets={assets}")
                 
-                if borrowed == 0 and shares == 0:
-                    logger.debug(f"No position in isolated vault {vault_address_checksum} (borrowed=0, shares=0)")
-                    continue
-                
-                # Skip if no debt (supply-only position)
-                if borrowed == 0:
-                    logger.debug(f"Isolated vault {vault_address_checksum}: supply-only (no debt, shares={shares})")
+                # Check if user has any position (assetsAccount > 0 means there's collateral/assets)
+                if borrowed == 0 and shares == 0 and assets_account == 0:
+                    logger.debug(f"No position in isolated vault {vault_address_checksum} (borrowed=0, shares=0, assetsAccount=0)")
                     continue
                 
                 # Get liquidity info
                 liquidity_info = vault_account_info[15] if len(vault_account_info) > 15 else vault_account_info[-1]
                 query_failure = liquidity_info[0]
+                
+                # If liquidity query failed, try calling getAccountLiquidityInfo directly
                 if query_failure:
-                    logger.debug(f"Query failure for isolated vault {vault_address_checksum}: {liquidity_info[1]}")
-                    continue
+                    logger.warning(f"Liquidity query failed for isolated vault {vault_address_checksum}: {liquidity_info[1]}")
+                    logger.info(f"Attempting direct getAccountLiquidityInfo call for {address_checksum}, vault {vault_address_checksum}")
+                    try:
+                        # Try calling getAccountLiquidityInfo directly
+                        direct_liquidity_info = account_lens_contract.functions.getAccountLiquidityInfo(
+                            address_checksum,
+                            vault_address_checksum
+                        ).call()
+                        logger.info(f"Direct getAccountLiquidityInfo succeeded, queryFailure={direct_liquidity_info[0]}")
+                        if not direct_liquidity_info[0]:  # If no failure
+                            liquidity_info = direct_liquidity_info
+                            query_failure = False
+                        else:
+                            logger.warning(f"Direct getAccountLiquidityInfo also failed: {direct_liquidity_info[1]}")
+                            # Even if liquidity query fails, if assetsAccount > 0, we might still have a position
+                            # But we can't calculate health factor without liquidity info
+                            if assets_account > 0:
+                                logger.warning(f"Position exists (assetsAccount={assets_account}) but liquidity query failed - cannot calculate health factor")
+                            continue
+                    except Exception as e_liquidity:
+                        logger.error(f"Error calling getAccountLiquidityInfo directly: {e_liquidity}")
+                        # If we have assetsAccount but liquidity query fails, we can't calculate health factor
+                        if assets_account > 0:
+                            logger.warning(f"Position exists (assetsAccount={assets_account}) but cannot get liquidity info - skipping")
+                        continue
+                
+                # Skip if no debt (supply-only position) - but only if we have valid liquidity info
+                if borrowed == 0:
+                    # Check if there's actually debt from liquidity info
+                    liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0
+                    if liability_value_borrowing == 0:
+                        logger.debug(f"Isolated vault {vault_address_checksum}: supply-only (no debt, shares={shares}, assetsAccount={assets_account})")
+                        continue
                 
                 # Extract values from liquidityInfo
                 # Health score = collateralValueLiquidation / liabilityValueLiquidation

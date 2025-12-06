@@ -3,9 +3,9 @@
 ## Quick Setup (Recommended: SSH Keys)
 
 1. **One-time setup** - Set up passwordless SSH:
-   ```bash
+```bash
    ./setup-passwordless-ssh.sh
-   ```
+```
    This will:
    - Generate an SSH key if you don't have one
    - Show you how to add it to the server

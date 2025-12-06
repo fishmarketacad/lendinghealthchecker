@@ -165,19 +165,33 @@ class CurvanceStrategy(LendingProtocolStrategy):
         try:
             # Get all MarketManagers
             market_managers = protocols.get_curvance_market_managers(self.w3)
+            logger.debug(f"Curvance: Found {len(market_managers)} MarketManagers for {user_address}")
+            
+            # Get position details first (this is more reliable than health factor)
+            position_details = protocols.get_curvance_position_details(
+                user_address, self.contract, self.w3, None, market_managers
+            )
+            
+            logger.debug(f"Curvance: Found {len(position_details)} position details for {user_address}")
+            
+            if not position_details:
+                logger.debug(f"Curvance: No position details found for {user_address}")
+                return positions
             
             # Get health factor (checks all MarketManagers)
+            # Note: health_factor might be None even if positions exist, so we'll use fallback
             health_factor = protocols.check_curvance_health_factor(
                 user_address, self.contract, self.w3, None, market_managers
             )
             
-            if not health_factor or health_factor > 1e10:  # Invalid position
-                return positions
+            logger.debug(f"Curvance: Health factor for {user_address}: {health_factor}")
             
-            # Get position details
-            position_details = protocols.get_curvance_position_details(
-                user_address, self.contract, self.w3, None, market_managers
-            )
+            # If health_factor is None but we have position details, use a fallback health factor
+            # We'll try to get it from the position details if available
+            if health_factor is None or health_factor > 1e10:
+                logger.debug(f"Curvance: Invalid health factor ({health_factor}), will try to use position details")
+                # We'll still process positions if we have details, but use a placeholder health factor
+                # The position details might have health info we can use
             
             for detail in position_details:
                 collateral_symbol = detail.get('collateral_token', '?')
@@ -186,22 +200,35 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 
                 # Skip if no debt (supply-only position)
                 if debt_amount == 0:
+                    logger.debug(f"Curvance: Skipping position with no debt (supply-only)")
+                    continue
+                
+                # Use health_factor from detail if available, otherwise use the global one
+                position_health = detail.get('health_factor')
+                if position_health and position_health > 0 and position_health <= 1e10:
+                    use_health_factor = float(position_health)
+                elif health_factor and health_factor > 0 and health_factor <= 1e10:
+                    use_health_factor = float(health_factor)
+                else:
+                    # If we can't get health factor, skip this position (invalid)
+                    logger.debug(f"Curvance: Skipping position - no valid health factor (detail health: {position_health}, global health: {health_factor})")
                     continue
                 
                 # Curvance doesn't provide USD values, estimate from amounts
                 # (In production, would use price oracle)
-                # Use debt_amount for USD value check to ensure position isn't filtered
                 collateral_usd = collateral_amount  # Rough estimate
                 debt_usd = debt_amount  # Rough estimate - ensure it's > 0 for validation
                 
                 # Use cToken as market_id (it's the MarketManager address)
                 market_id = detail.get('cToken', 'curvance')
                 
+                logger.debug(f"Curvance: Adding position - cToken: {market_id}, collateral: {collateral_amount} {collateral_symbol}, debt: {debt_amount}, health: {use_health_factor}")
+                
                 positions.append(PositionData(
                     protocol_name="Curvance",
                     market_name=f"Curvance Market",
                     market_id=market_id,
-                    health_factor=float(health_factor),
+                    health_factor=use_health_factor,
                     collateral=Asset(
                         symbol=collateral_symbol,
                         amount=collateral_amount,
@@ -216,6 +243,8 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     ),
                     app_url=self.app_url
                 ))
+            
+            logger.debug(f"Curvance: Returning {len(positions)} positions for {user_address}")
         except Exception as e:
             logger.error(f"Error fetching Curvance positions: {e}", exc_info=True)
         

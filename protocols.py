@@ -287,10 +287,16 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
             cToken = position[0]
             collateral_raw = position[1]
             debt_raw = position[2]
+            health_raw = position[3] if len(position) > 3 else 0
             
             # Skip if no debt
             if debt_raw == 0:
                 continue
+            
+            # Extract health factor from position if available
+            health_factor = None
+            if health_raw > 0:
+                health_factor = health_raw / 1e18
             
             # Get token symbol and decimals
             try:
@@ -313,7 +319,8 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
                     'collateral_token': collateral_symbol,
                     'collateral_amount': collateral_amount,
                     'debt_token': debt_symbol,
-                    'debt_amount': debt_amount
+                    'debt_amount': debt_amount,
+                    'health_factor': health_factor  # Include health factor from position
                 })
             except Exception as e:
                 logger.debug(f"Error getting token info for cToken {cToken}: {e}")
@@ -323,7 +330,8 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
                     'collateral_token': '?',
                     'collateral_amount': collateral_raw,
                     'debt_token': '?',
-                    'debt_amount': debt_raw
+                    'debt_amount': debt_raw,
+                    'health_factor': health_factor  # Include health factor from position
                 })
         
         return position_details

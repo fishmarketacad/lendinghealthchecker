@@ -117,7 +117,9 @@ print("TELEGRAM_BOT_TOKEN:", "SET" if TOKEN else "NOT SET")
 print("CHECK_INTERVAL:", CHECK_INTERVAL)
 print("USER_DATA_FILE:", USER_DATA_FILE)
 print("\nSupported Protocols:")
-for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
+# Filter out disabled protocols (currently Euler)
+enabled_protocols = {pid: info for pid, info in PROTOCOL_CONFIG.items() if pid != 'euler'}
+for protocol_id, protocol_info in enabled_protocols.items():
     print(f"  - {protocol_info['name']} ({protocol_id}) on {protocol_info['chain']}")
 
 # Load user data from file

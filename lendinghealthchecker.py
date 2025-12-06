@@ -1104,7 +1104,7 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             borrow_amount_raw = market_info.get('borrowAmountRaw')
                             loan_symbol = market_info.get('loanAsset', '?')
                             liquidation_price = market_info.get('liquidationPrice')
-                            liquidation_drop_pct = market_info.get('liquidationDropPct')
+                            liquidation_drop_pct_from_market = market_info.get('liquidationDropPct')
                             
                             # Format collateral: asset quantity (USD)
                             if collateral_amount is not None:

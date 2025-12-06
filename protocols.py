@@ -1247,7 +1247,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                         market['lltv'] = lltv_from_contract
                                         logger.debug(f"Fetched LLTV from contract for market {market['id']}: {lltv_from_contract:.4f}")
                                 
-                                # Fetch raw borrow amount, collateral amount, and calculate liquidation price from contract
+                                # Always fetch raw borrow amount, collateral amount, and calculate liquidation price from contract
+                                # This ensures we have accurate data even if GraphQL doesn't provide it
                                 try:
                                     # Convert market ID to bytes32
                                     market_id_clean = market['id'].replace('0x', '').lower()

@@ -219,10 +219,13 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 collateral_usd = collateral_amount  # Rough estimate
                 debt_usd = debt_amount  # Rough estimate - ensure it's > 0 for validation
                 
-                # Use cToken as market_id (it's the MarketManager address)
-                market_id = detail.get('cToken', 'curvance')
+                # Use market_manager as market_id (NOT cToken - cToken is collateral token address)
+                market_id = detail.get('market_manager')
+                if not market_id:
+                    logger.warning(f"Curvance: No market_manager found for position, using cToken as fallback")
+                    market_id = detail.get('cToken', 'curvance')
                 
-                logger.debug(f"Curvance: Adding position - cToken: {market_id}, collateral: {collateral_amount} {collateral_symbol}, debt: {debt_amount}, health: {use_health_factor}")
+                logger.debug(f"Curvance: Adding position - MarketManager: {market_id}, cToken: {detail.get('cToken')}, collateral: {collateral_amount} {collateral_symbol}, debt: {debt_amount}, health: {use_health_factor}")
                 
                 positions.append(PositionData(
                     protocol_name="Curvance",

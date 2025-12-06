@@ -253,7 +253,7 @@ def check_curvance_health_factor(address: str, contract, w3, market_manager_addr
 
 def get_curvance_position_details(address: str, contract, w3, market_manager_address: str = None, known_market_managers: List[str] = None) -> List[Dict]:
     """
-    Get Curvance position details including token symbols and raw amounts.
+    Get Curvance position details including token symbols, raw amounts, MarketManager, and health factor.
     
     Args:
         address: User's wallet address
@@ -263,7 +263,8 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
         known_market_managers: List of MarketManager addresses
     
     Returns:
-        List of position dicts with: cToken, collateral_token_symbol, collateral_amount, debt_token_symbol, debt_amount
+        List of position dicts with: cToken, market_manager, collateral_token_symbol, collateral_amount, 
+        debt_token_symbol, debt_amount, health_factor
     """
     position_details = []
     
@@ -276,27 +277,73 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
         if not positions:
             return []
         
+        # Determine which MarketManagers to try
+        market_managers_to_try = []
+        if market_manager_address:
+            market_managers_to_try = [market_manager_address.lower()]
+        elif known_market_managers:
+            market_managers_to_try = [mm.lower() for mm in known_market_managers]
+        else:
+            market_managers_to_try = get_curvance_market_managers(w3)
+        
+        if not market_managers_to_try:
+            logger.warning("No MarketManagers available for Curvance position details")
+            return []
+        
         # ERC20 ABI for symbol and decimals
         erc20_abi = [
             {"inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
             {"inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"}
         ]
         
+        zero_address = '0x0000000000000000000000000000000000000000'
+        
         for position in positions:
             # position structure: (cToken, collateral, debt, health, tokenBalance)
             cToken = position[0]
             collateral_raw = position[1]
             debt_raw = position[2]
-            health_raw = position[3] if len(position) > 3 else 0
             
             # Skip if no debt
             if debt_raw == 0:
                 continue
             
-            # Extract health factor from position if available
+            # Try each MarketManager to find the one that works for this position
+            market_manager_found = None
             health_factor = None
-            if health_raw > 0:
-                health_factor = health_raw / 1e18
+            
+            for mm_address in market_managers_to_try:
+                try:
+                    # Call getPositionHealth to get accurate health factor and verify MarketManager
+                    health_result = contract.functions.getPositionHealth(
+                        w3.to_checksum_address(mm_address),
+                        address_checksum,
+                        cToken,
+                        zero_address,  # borrowableCToken (0 for checking existing)
+                        False,  # isDeposit
+                        0,  # collateralAssets (0 = check existing)
+                        False,  # isRepayment
+                        0,  # debtAssets (0 = check existing)
+                        0  # bufferTime
+                    ).call()
+                    
+                    position_health_raw, error_code_hit = health_result
+                    
+                    if error_code_hit:
+                        continue  # Try next MarketManager
+                    
+                    if position_health_raw > 0:
+                        health_factor = position_health_raw / 1e18
+                        market_manager_found = mm_address
+                        break  # Found working MarketManager
+                except Exception as e:
+                    logger.debug(f"Error calling getPositionHealth with MarketManager {mm_address} for cToken {cToken}: {e}")
+                    continue
+            
+            # If no MarketManager worked, skip this position (can't determine health)
+            if not market_manager_found:
+                logger.debug(f"No working MarketManager found for cToken {cToken}, skipping position")
+                continue
             
             # Get token symbol and decimals
             try:
@@ -304,34 +351,35 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
                 collateral_symbol = token_contract.functions.symbol().call()
                 collateral_decimals = token_contract.functions.decimals().call()
                 
-                # Convert to human-readable amount (3 sig fig)
+                # Convert to human-readable amount
                 collateral_amount = collateral_raw / (10 ** collateral_decimals)
                 
                 # For debt, we need to find the borrowable token - this is complex
-                # For now, we'll use a placeholder or try to get it from MarketManager
-                # This is a simplified version - full implementation would need MarketManager query
+                # For now, we'll use a placeholder
                 debt_symbol = "?"  # Would need MarketManager to get borrowable token
                 debt_decimals = 18  # Default assumption
                 debt_amount = debt_raw / (10 ** debt_decimals)
                 
                 position_details.append({
                     'cToken': cToken,
+                    'market_manager': market_manager_found,  # This is the actual MarketManager address
                     'collateral_token': collateral_symbol,
                     'collateral_amount': collateral_amount,
                     'debt_token': debt_symbol,
                     'debt_amount': debt_amount,
-                    'health_factor': health_factor  # Include health factor from position
+                    'health_factor': health_factor  # From getPositionHealth
                 })
             except Exception as e:
                 logger.debug(f"Error getting token info for cToken {cToken}: {e}")
-                # Still add position with raw amounts
+                # Still add position with raw amounts if we found MarketManager
                 position_details.append({
                     'cToken': cToken,
+                    'market_manager': market_manager_found,
                     'collateral_token': '?',
                     'collateral_amount': collateral_raw,
                     'debt_token': '?',
                     'debt_amount': debt_raw,
-                    'health_factor': health_factor  # Include health factor from position
+                    'health_factor': health_factor
                 })
         
         return position_details

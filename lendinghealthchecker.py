@@ -73,16 +73,18 @@ PROTOCOL_CONFIG = {
         'chain': 'Monad',
         'chain_id': 143,
         'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
-        # vaultLens contract address on Monad (for discovering user vaults)
-        'pool_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
-        # accountLens for account-level queries
+        # EVC (Euler Vault Controller) address - required for getAccountEnabledVaultsInfo
+        'pool_address': '0x7a9324E8f270413fa2E458f5831226d99C7477CD',
+        # accountLens for account-level queries (discovering vaults)
         'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
+        # vaultLens address (for vault-specific queries if needed)
+        'vault_lens_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
         'app_url': 'https://app.euler.finance',
         'explorer_url': 'https://monadvision.com',
-        'health_factor_method': 'getAccountHealth',  # Custom method in protocols.py
+        'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
         'health_factor_index': None,  # Will need custom parsing
         'health_factor_divisor': 1e18,
-        'abi': protocols.load_abi('euler')  # Will create minimal ABI
+        'abi': protocols.load_abi('accountlens')  # Use AccountLens ABI
     }
 }
 
@@ -98,7 +100,12 @@ CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', 3600))  # Default to 1 hou
 protocol_connections = {}
 for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
     w3 = Web3(Web3.HTTPProvider(protocol_info['rpc_url']))
-    contract = w3.eth.contract(address=protocol_info['pool_address'], abi=protocol_info['abi'])
+    # For Euler, use accountLens address instead of pool_address (EVC)
+    if protocol_id == 'euler' and 'account_lens_address' in protocol_info:
+        contract_address = protocol_info['account_lens_address']
+    else:
+        contract_address = protocol_info['pool_address']
+    contract = w3.eth.contract(address=contract_address, abi=protocol_info['abi'])
     protocol_connections[protocol_id] = {
         'w3': w3,
         'contract': contract,
@@ -775,7 +782,7 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
         protocol_info = PROTOCOL_CONFIG['euler']
         conn = protocol_connections['euler']
         
-        # Get all vaults where user has positions using vaultLens
+        # Get all vaults where user has positions using AccountLens
         cache_key = f"euler_vaults_{address}"
         vaults_data = get_cached_or_fetch(
             cache_key,
@@ -783,7 +790,7 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
             address,
             conn['w3'],
             protocol_info.get('account_lens_address'),
-            protocol_info.get('pool_address')  # vaultLens address
+            protocol_info.get('pool_address')  # EVC address
         )
         
         if vaults_data:

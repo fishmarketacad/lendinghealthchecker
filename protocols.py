@@ -424,178 +424,113 @@ def get_euler_account_data(address: str, contract, w3) -> Optional[Dict]:
         logger.debug(traceback.format_exc())
         return None
 
-def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, vault_lens_address: str = None) -> List[Dict]:
+def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, evc_address: str = None) -> List[Dict]:
     """
     Get list of Euler vaults where user has positions using AccountLens.
-    AccountLens aggregates all account information including positions across vaults.
+    Uses getAccountEnabledVaultsInfo which returns all vaults with positions.
     
     Args:
         address: User's wallet address
         w3: Web3 instance
-        account_lens_address: accountLens contract address (primary method)
-        vault_lens_address: vaultLens contract address (fallback)
+        account_lens_address: accountLens contract address
+        evc_address: EVC (Euler Vault Controller) contract address
     
     Returns:
-        List of dicts with vault info: [{'vault_address': '0x...', 'health_factor': 1.5, ...}, ...]
+        List of dicts with vault info: [{'vault_address': '0x...', 'health_factor': 1.5, 'collateral_usd': 1000, 'debt_usd': 500}, ...]
     """
     vaults = []
     
     try:
         address_checksum = w3.to_checksum_address(address)
         account_lens_addr = account_lens_address or '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee'
+        evc_addr = evc_address or '0x7a9324E8f270413fa2E458f5831226d99C7477CD'
         
-        # AccountLens ABI - based on Euler V2 docs, it aggregates account positions
-        # Common functions: getAccountPositions, getAccountInfo, getAccountVaults
-        account_lens_abi = [
-            {
-                "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
-                "name": "getAccountPositions",
-                "outputs": [
-                    {
-                        "components": [
-                            {"internalType": "address", "name": "vault", "type": "address"},
-                            {"internalType": "uint256", "name": "healthFactor", "type": "uint256"},
-                            {"internalType": "uint256", "name": "collateralValue", "type": "uint256"},
-                            {"internalType": "uint256", "name": "debtValue", "type": "uint256"}
-                        ],
-                        "internalType": "struct AccountLens.Position[]",
-                        "name": "",
-                        "type": "tuple[]"
-                    }
-                ],
-                "stateMutability": "view",
-                "type": "function"
-            },
-            {
-                "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
-                "name": "getAccountVaults",
-                "outputs": [{"internalType": "address[]", "name": "", "type": "address[]"}],
-                "stateMutability": "view",
-                "type": "function"
-            },
-            {
-                "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
-                "name": "getAccountHealth",
-                "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-                "stateMutability": "view",
-                "type": "function"
-            }
-        ]
+        # Load AccountLens ABI from file
+        account_lens_abi = load_abi('accountlens')
+        if not account_lens_abi:
+            logger.error("Failed to load AccountLens ABI")
+            return []
         
         account_lens_contract = w3.eth.contract(
             address=w3.to_checksum_address(account_lens_addr),
             abi=account_lens_abi
         )
         
-        # Try getAccountPositions first (most comprehensive)
+        # Use getAccountEnabledVaultsInfo - this returns all vaults with positions
         try:
-            positions = account_lens_contract.functions.getAccountPositions(address_checksum).call()
+            result = account_lens_contract.functions.getAccountEnabledVaultsInfo(
+                w3.to_checksum_address(evc_addr),
+                address_checksum
+            ).call()
             
-            for pos in positions:
-                vault_address = pos[0]
-                health_factor_raw = pos[1]
-                collateral_value_raw = pos[2]
-                debt_value_raw = pos[3]
-                
-                health_factor = health_factor_raw / 1e18
-                collateral_usd = collateral_value_raw / 1e18
-                debt_usd = debt_value_raw / 1e18
-                
-                # Filter invalid positions
-                if health_factor > 1e10 or debt_usd == 0:
+            # Result structure: (evcAccountInfo, vaultAccountInfo[], accountRewardInfo[])
+            evc_account_info = result[0]
+            vault_account_info_list = result[1]
+            account_reward_info_list = result[2]
+            
+            logger.info(f"Found {len(vault_account_info_list)} vault account infos for {address}")
+            
+            for vault_info in vault_account_info_list:
+                try:
+                    # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
+                    vault_address = vault_info[2]  # vault address
+                    borrowed = vault_info[7]  # borrowed amount
+                    
+                    # Skip if no debt (supply-only position)
+                    if borrowed == 0:
+                        continue
+                    
+                    # Get liquidity info (last element in vault_info tuple)
+                    liquidity_info = vault_info[-1]  # AccountLiquidityInfo struct
+                    
+                    # liquidity_info structure: (queryFailure, queryFailureReason, account, vault, unitOfAccount, 
+                    #                            timeToLiquidation, liabilityValueBorrowing, liabilityValueLiquidation,
+                    #                            collateralValueBorrowing, collateralValueLiquidation, collateralValueRaw, ...)
+                    query_failure = liquidity_info[0]
+                    if query_failure:
+                        logger.debug(f"Query failure for vault {vault_address}: {liquidity_info[1]}")
+                        continue
+                    
+                    liability_value_borrowing = liquidity_info[6]  # debt value
+                    collateral_value_borrowing = liquidity_info[8]  # collateral value
+                    
+                    # Convert from 18 decimals to USD
+                    debt_usd = liability_value_borrowing / 1e18
+                    collateral_usd = collateral_value_borrowing / 1e18
+                    
+                    # Calculate health factor: collateral / debt
+                    if debt_usd > 0:
+                        health_factor = collateral_usd / debt_usd
+                    else:
+                        continue  # Skip if no debt
+                    
+                    # Filter invalid positions
+                    if health_factor > 1e10:
+                        continue
+                    
+                    vaults.append({
+                        'vault_address': vault_address,
+                        'health_factor': health_factor,
+                        'collateral_usd': collateral_usd,
+                        'debt_usd': debt_usd
+                    })
+                    logger.info(f"Found Euler vault: {vault_address}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
+                    
+                except Exception as e_vault:
+                    logger.debug(f"Error processing vault info: {e_vault}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
                     continue
-                
-                vaults.append({
-                    'vault_address': vault_address,
-                    'health_factor': health_factor,
-                    'collateral_usd': collateral_usd,
-                    'debt_usd': debt_usd
-                })
-                logger.info(f"Found Euler vault via getAccountPositions: {vault_address}, hf={health_factor:.3f}")
             
             if vaults:
-                logger.info(f"Found {len(vaults)} Euler vault positions via AccountLens.getAccountPositions")
-                return vaults
+                logger.info(f"Found {len(vaults)} Euler vault positions for {address}")
+            else:
+                logger.info(f"No valid Euler positions found for {address} (checked {len(vault_account_info_list)} vaults)")
                 
         except Exception as e:
-            logger.debug(f"getAccountPositions failed: {e}")
-            # Fallback: try getAccountVaults, then query each vault individually
-            try:
-                user_vaults = account_lens_contract.functions.getAccountVaults(address_checksum).call()
-                logger.info(f"Found {len(user_vaults)} vaults via getAccountVaults")
-                
-                # Query each vault using vaultLens
-                vault_lens_addr = vault_lens_address or '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0'
-                vault_lens_abi = [
-                    {
-                        "inputs": [
-                            {"internalType": "address", "name": "account", "type": "address"},
-                            {"internalType": "address", "name": "vault", "type": "address"}
-                        ],
-                        "name": "getVaultPosition",
-                        "outputs": [
-                            {"internalType": "uint256", "name": "healthFactor", "type": "uint256"},
-                            {"internalType": "uint256", "name": "collateralValue", "type": "uint256"},
-                            {"internalType": "uint256", "name": "debtValue", "type": "uint256"}
-                        ],
-                        "stateMutability": "view",
-                        "type": "function"
-                    }
-                ]
-                vault_lens_contract = w3.eth.contract(
-                    address=w3.to_checksum_address(vault_lens_addr),
-                    abi=vault_lens_abi
-                )
-                
-                for vault_address in user_vaults:
-                    try:
-                        position_data = vault_lens_contract.functions.getVaultPosition(
-                            address_checksum,
-                            vault_address
-                        ).call()
-                        
-                        health_factor_raw = position_data[0]
-                        collateral_value_raw = position_data[1]
-                        debt_value_raw = position_data[2]
-                        
-                        health_factor = health_factor_raw / 1e18
-                        collateral_usd = collateral_value_raw / 1e18
-                        debt_usd = debt_value_raw / 1e18
-                        
-                        if health_factor <= 1e10 and debt_usd > 0:
-                            vaults.append({
-                                'vault_address': vault_address,
-                                'health_factor': health_factor,
-                                'collateral_usd': collateral_usd,
-                                'debt_usd': debt_usd
-                            })
-                            logger.info(f"Found Euler vault via getAccountVaults: {vault_address}, hf={health_factor:.3f}")
-                    except Exception as e2:
-                        logger.debug(f"Error querying vault {vault_address}: {e2}")
-                        continue
-                        
-            except Exception as e:
-                logger.debug(f"getAccountVaults also failed: {e}")
-        
-        # Last fallback: try account-level health only
-        if not vaults:
-            try:
-                health_factor_raw = account_lens_contract.functions.getAccountHealth(address_checksum).call()
-                health_factor = health_factor_raw / 1e18
-                
-                if health_factor <= 1e10:
-                    vaults.append({
-                        'vault_address': None,  # Unknown vault
-                        'health_factor': health_factor,
-                        'collateral_usd': 0,
-                        'debt_usd': 0
-                    })
-                    logger.info(f"Found Euler position via getAccountHealth fallback: hf={health_factor:.3f}")
-            except Exception as e:
-                logger.debug(f"getAccountHealth also failed: {e}")
-        
-        if vaults:
-            logger.info(f"Found {len(vaults)} Euler vault positions for {address}")
+            logger.error(f"Error calling getAccountEnabledVaultsInfo: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
         
     except Exception as e:
         logger.error(f"Error getting Euler user vaults for {address}: {e}")

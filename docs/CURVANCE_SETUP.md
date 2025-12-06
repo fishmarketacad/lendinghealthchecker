@@ -12,6 +12,7 @@ From Curvance's deployment info:
 - `OracleManager`: `0x32fad39e79fac67f80d1c86cbd1598043e52cdb6`
 - `RedstoneClassicAdaptor`: `0x0fa602b3e748438a3f1599206ed6dc497ab3331e`
 - `CentralRegistry`: `0x1310f352f1389969ece6741671c4b919523912ff`
+- `ProtocolReader`: `0xBF67b967eCcf21f2C196f947b703e874D5dB649d`
 
 ## Questions to Ask Curvance Team
 

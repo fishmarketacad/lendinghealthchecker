@@ -210,8 +210,9 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 cToken = position[0]
                 collateral_raw = position[1]
                 debt_raw = position[2]
+                health_raw_from_state = position[3] if len(position) > 3 else 0  # Health from getAllDynamicState
                 
-                logger.debug(f"Curvance: Processing position - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}")
+                logger.debug(f"Curvance: Processing position - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}, health_from_state: {health_raw_from_state}")
                 
                 # Skip if no debt
                 if debt_raw == 0:
@@ -244,7 +245,14 @@ class CurvanceStrategy(LendingProtocolStrategy):
                             continue  # Try next MarketManager
                         
                         if position_health_raw > 0:
-                            health_factor = position_health_raw / 1e18
+                            health_factor_candidate = position_health_raw / 1e18
+                            
+                            # Skip if getPositionHealth returned max uint256 (invalid)
+                            if health_factor_candidate > 1e10:
+                                logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}, using fallback")
+                                continue  # Try next MarketManager or use fallback
+                            
+                            health_factor = health_factor_candidate
                             market_manager_found = mm_address
                             logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, health: {health_factor:.3f}")
                             break  # Found working MarketManager
@@ -254,13 +262,27 @@ class CurvanceStrategy(LendingProtocolStrategy):
                         logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
                         continue
                 
-                # Skip if no MarketManager worked
-                if not market_manager_found or not health_factor:
-                    logger.warning(f"Curvance: No working MarketManager found for cToken {cToken} (tried {len(market_managers)} MarketManagers)")
+                # Fallback to health from getAllDynamicState if getPositionHealth failed or returned max uint256
+                if not health_factor and health_raw_from_state > 0:
+                    health_factor_candidate = health_raw_from_state / 1e18
+                    # Only use fallback if it's a valid health factor (not max uint256)
+                    if health_factor_candidate <= 1e10:
+                        health_factor = health_factor_candidate
+                        # Try to find MarketManager by matching cToken to MarketManager's supported tokens
+                        # For now, use first MarketManager as fallback
+                        market_manager_found = market_managers[0] if market_managers else None
+                        logger.info(f"Curvance: Using fallback health from getAllDynamicState for cToken {cToken}, health: {health_factor:.3f}")
+                    else:
+                        logger.debug(f"Curvance: Fallback health also invalid (max uint256) for cToken {cToken}")
+                
+                # Skip if no valid health factor found
+                if not health_factor or health_factor > 1e10:
+                    logger.warning(f"Curvance: No valid health factor found for cToken {cToken} (tried {len(market_managers)} MarketManagers)")
                     continue
                 
-                # Skip invalid health factors
-                if health_factor > 1e10:
+                # Skip if no MarketManager found (shouldn't happen if health_factor is set)
+                if not market_manager_found:
+                    logger.warning(f"Curvance: No MarketManager found for cToken {cToken} despite having health factor")
                     continue
                 
                 # Get token symbol and decimals

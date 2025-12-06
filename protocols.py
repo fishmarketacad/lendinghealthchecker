@@ -469,19 +469,33 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
             account_reward_info_list = result[2]
             
             logger.info(f"Found {len(vault_account_info_list)} vault account infos for {address}")
+            logger.debug(f"Result type: {type(result)}, length: {len(result) if hasattr(result, '__len__') else 'N/A'}")
             
-            for vault_info in vault_account_info_list:
+            if not vault_account_info_list:
+                logger.info(f"No vault account infos returned for {address}")
+                return []
+            
+            for idx, vault_info in enumerate(vault_account_info_list):
                 try:
-                    # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
-                    vault_address = vault_info[2]  # vault address
-                    borrowed = vault_info[7]  # borrowed amount
+                    logger.debug(f"Processing vault_info[{idx}], type: {type(vault_info)}, length: {len(vault_info) if hasattr(vault_info, '__len__') else 'N/A'}")
+                    
+                    # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, 
+                    #                      assetAllowanceVault, assetAllowanceVaultPermit2, assetAllowanceExpirationVaultPermit2,
+                    #                      assetAllowancePermit2, balanceForwarderEnabled, isController, isCollateral, liquidityInfo)
+                    # Based on AccountLens ABI: VaultAccountInfo has 16 fields, liquidityInfo is last
+                    vault_address = vault_info[2]  # vault address (index 2)
+                    borrowed = vault_info[7]  # borrowed amount (index 7)
+                    
+                    logger.debug(f"Vault {vault_address}: borrowed={borrowed}")
                     
                     # Skip if no debt (supply-only position)
                     if borrowed == 0:
+                        logger.debug(f"Skipping vault {vault_address}: no debt (supply-only)")
                         continue
                     
-                    # Get liquidity info (last element in vault_info tuple)
-                    liquidity_info = vault_info[-1]  # AccountLiquidityInfo struct
+                    # Get liquidity info (last element in vault_info tuple, index 15)
+                    liquidity_info = vault_info[15] if len(vault_info) > 15 else vault_info[-1]  # AccountLiquidityInfo struct
+                    logger.debug(f"Liquidity info type: {type(liquidity_info)}, length: {len(liquidity_info) if hasattr(liquidity_info, '__len__') else 'N/A'}")
                     
                     # liquidity_info structure: (queryFailure, queryFailureReason, account, vault, unitOfAccount, 
                     #                            timeToLiquidation, liabilityValueBorrowing, liabilityValueLiquidation,

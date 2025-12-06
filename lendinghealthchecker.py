@@ -782,6 +782,8 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
         protocol_info = PROTOCOL_CONFIG['euler']
         conn = protocol_connections['euler']
         
+        logger.info(f"Checking Euler for {address}...")
+        
         # Get all vaults where user has positions using AccountLens
         cache_key = f"euler_vaults_{address}"
         vaults_data = get_cached_or_fetch(
@@ -793,23 +795,35 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
             protocol_info.get('pool_address')  # EVC address
         )
         
+        logger.info(f"Euler query returned {len(vaults_data) if vaults_data else 0} vaults for {address}")
+        
         if vaults_data:
             for vault in vaults_data:
                 hf = vault.get('health_factor')
                 debt_usd = vault.get('debt_usd', 0)
+                vault_address = vault.get('vault_address', '')
+                
+                logger.debug(f"Euler vault {vault_address}: hf={hf}, debt=${debt_usd}")
                 
                 if is_valid_position(hf, debt_usd):
-                    vault_address = vault.get('vault_address', '').lower()
-                    threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address)
+                    vault_address_lower = vault_address.lower() if vault_address else ''
+                    threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address_lower)
                     positions.append({
                         'protocol_id': 'euler',
-                        'market_id': vault_address,
+                        'market_id': vault_address_lower,
                         'health_factor': float(hf),
                         'threshold': threshold,
                         'market_info': vault
                     })
+                    logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
+                else:
+                    logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
+        else:
+            logger.info(f"No Euler vaults found for {address}")
     except Exception as e:
         logger.error(f"Error checking Euler for {address}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
     return positions
 

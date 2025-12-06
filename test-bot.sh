@@ -11,7 +11,7 @@ fi
 
 # Default commands to test if none provided
 if [ $# -eq 0 ]; then
-    COMMANDS=("/position morpho" "/position curvance")
+    COMMANDS=("/check curvance")
 else
     COMMANDS=("$@")
 fi

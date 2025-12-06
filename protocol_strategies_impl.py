@@ -209,14 +209,15 @@ class CurvanceStrategy(LendingProtocolStrategy):
             seen_positions = {}  # (market_manager, cToken) -> PositionData
             
             # Step 3: For each position, find its MarketManager and get health factor
-            for position in raw_positions:
+            logger.info(f"Curvance: Processing {len(raw_positions)} raw positions from getAllDynamicState")
+            for idx, position in enumerate(raw_positions):
                 # position structure: (cToken, collateral, debt, health, tokenBalance)
                 cToken = position[0]
                 collateral_raw = position[1]
                 debt_raw = position[2]
                 health_raw_from_state = position[3] if len(position) > 3 else 0  # Health from getAllDynamicState
                 
-                logger.debug(f"Curvance: Processing position - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}, health_from_state: {health_raw_from_state}")
+                logger.info(f"Curvance: Position {idx+1}/{len(raw_positions)} - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}, health_from_state: {health_raw_from_state}")
                 
                 # Skip if no debt
                 if debt_raw == 0:
@@ -311,12 +312,15 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 # Each position with a different collateral token is a separate position
                 position_key = (market_manager_found.lower() if market_manager_found else None, cToken.lower() if cToken else None)
                 
+                logger.info(f"Curvance: Position key: MM={position_key[0]}, cToken={position_key[1]}, health={health_factor:.3f}")
+                
                 if position_key[0] and position_key[1]:
                     # Use market_id as combination of MarketManager and cToken for unique identification
                     unique_market_id = f"{market_manager_found}_{cToken}"
                     
                     if position_key not in seen_positions:
                         # First time seeing this (MarketManager, cToken) combination
+                        logger.info(f"Curvance: Adding new position - MM: {market_manager_found}, cToken: {cToken}, symbol: {collateral_symbol}")
                         seen_positions[position_key] = PositionData(
                             protocol_name="Curvance",
                             market_name=f"Curvance Market ({collateral_symbol})",
@@ -338,7 +342,9 @@ class CurvanceStrategy(LendingProtocolStrategy):
                         )
                     else:
                         # Already seen this (MarketManager, cToken) - this shouldn't happen, but log it
-                        logger.warning(f"Curvance: Duplicate position detected for MM {market_manager_found}, cToken {cToken}")
+                        existing = seen_positions[position_key]
+                        logger.warning(f"Curvance: Duplicate position detected for MM {market_manager_found}, cToken {cToken}. Existing: symbol={existing.collateral.symbol}, health={existing.health_factor:.3f}, New: symbol={collateral_symbol}, health={health_factor:.3f}")
+                        # Skip duplicate - keep the first one
             
             # Convert deduplicated positions to list
             positions = list(seen_positions.values())

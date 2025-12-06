@@ -11,7 +11,7 @@ from time import time
 import protocols
 import rebalancing
 from protocol_strategy import ProtocolManager, PositionData
-from protocol_strategies_impl import NeverlandStrategy, MorphoStrategy, CurvanceStrategy
+from protocol_strategies_impl import NeverlandStrategy, MorphoStrategy, CurvanceStrategy, EulerStrategy
 
 # Unique instance identifier to track duplicate instances
 import socket
@@ -70,25 +70,24 @@ PROTOCOL_CONFIG = {
         'health_factor_divisor': 1e18,
         'abi': protocols.load_abi('curvance')
     },
-            # Euler disabled - waiting for subgraph support on Monad
-            # 'euler': {
-            #     'name': 'Euler',
-            #     'chain': 'Monad',
-            #     'chain_id': 143,
-            #     'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
-            #     # EVC (Euler Vault Controller) address - required for getAccountEnabledVaultsInfo
-            #     'pool_address': '0x7a9324E8f270413fa2E458f5831226d99C7477CD',
-            #     # accountLens for account-level queries (discovering vaults)
-            #     'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
-            #     # vaultLens address (for vault-specific queries if needed)
-            #     'vault_lens_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
-            #     'app_url': 'https://app.euler.finance',
-            #     'explorer_url': 'https://monadvision.com',
-            #     'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
-            #     'health_factor_index': None,  # Will need custom parsing
-            #     'health_factor_divisor': 1e18,
-            #     'abi': protocols.load_abi('AccountLens')  # Use AccountLens ABI (case-sensitive)
-            # }
+    'euler': {
+        'name': 'Euler',
+        'chain': 'Monad',
+        'chain_id': 143,
+        'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
+        # EVC (Euler Vault Controller) address - required for getAccountEnabledVaultsInfo
+        'pool_address': '0x7a9324E8f270413fa2E458f5831226d99C7477CD',
+        # accountLens for account-level queries (discovering vaults)
+        'account_lens_address': '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee',
+        # vaultLens address (for vault-specific queries if needed)
+        'vault_lens_address': '0x15d1Cc54fB3f7C0498fc991a23d8Dc00DF3c32A0',
+        'app_url': 'https://app.euler.finance',
+        'explorer_url': 'https://monadvision.com',
+        'health_factor_method': 'getAccountEnabledVaultsInfo',  # Custom method in protocols.py
+        'health_factor_index': None,  # Will need custom parsing
+        'health_factor_divisor': 1e18,
+        'abi': protocols.load_abi('AccountLens')  # Use AccountLens ABI (case-sensitive)
+    }
 }
 
 # Default protocol
@@ -142,6 +141,18 @@ protocol_manager.register_strategy(
         curvance_conn['contract'],
         curvance_conn['w3'],
         PROTOCOL_CONFIG['curvance']['app_url']
+    )
+)
+
+# Register Euler strategy
+euler_info = PROTOCOL_CONFIG['euler']
+euler_w3 = Web3(Web3.HTTPProvider(euler_info['rpc_url']))
+protocol_manager.register_strategy(
+    EulerStrategy(
+        euler_w3,
+        euler_info['account_lens_address'],
+        euler_info['pool_address'],  # EVC address
+        euler_info['app_url']
     )
 )
 
@@ -700,7 +711,8 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
             protocol_name_to_id = {
                 'Neverland': 'neverland',
                 'Morpho': 'morpho',
-                'Curvance': 'curvance'
+                'Curvance': 'curvance',
+                'Euler': 'euler'
             }
             protocol_id = protocol_name_to_id.get(pos_data.protocol_name, pos_data.protocol_name.lower())
             market_id = pos_data.market_id.lower() if pos_data.market_id else None
@@ -718,6 +730,8 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
                 'debt_amount': pos_data.debt.amount,
                 'collateral_symbol': pos_data.collateral.symbol,
                 'debt_symbol': pos_data.debt.symbol,
+                'collateralAsset': pos_data.collateral.symbol,  # For Morpho compatibility (used in build_position_message)
+                'loanAsset': pos_data.debt.symbol,  # For Morpho compatibility (used in build_position_message)
                 'liquidation_price': pos_data.liquidation_price,
                 'liquidation_drop_pct': pos_data.liquidation_drop_pct,
                 'supplyAssetsUsd': pos_data.collateral.usd_value,  # For Morpho compatibility

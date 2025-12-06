@@ -164,19 +164,37 @@ class CurvanceStrategy(LendingProtocolStrategy):
         
         try:
             address_checksum = self.w3.to_checksum_address(user_address)
+            logger.info(f"Curvance: Checking positions for {user_address} using ProtocolReader {self.contract.address}")
             
             # Step 1: Get all positions from getAllDynamicState
-            result = self.contract.functions.getAllDynamicState(address_checksum).call()
-            market_data, user_data = result
-            raw_positions = user_data[1]  # positions array
-            
-            if not raw_positions:
-                logger.debug(f"Curvance: No positions found for {user_address}")
+            try:
+                result = self.contract.functions.getAllDynamicState(address_checksum).call()
+                logger.debug(f"Curvance: getAllDynamicState returned result: {type(result)}")
+                
+                if not result or len(result) < 2:
+                    logger.warning(f"Curvance: Invalid result from getAllDynamicState: {result}")
+                    return positions
+                
+                market_data, user_data = result
+                logger.debug(f"Curvance: market_data type: {type(market_data)}, user_data type: {type(user_data)}")
+                
+                if not user_data or len(user_data) < 2:
+                    logger.warning(f"Curvance: Invalid user_data structure: {user_data}")
+                    return positions
+                
+                raw_positions = user_data[1]  # positions array
+                logger.info(f"Curvance: Found {len(raw_positions) if raw_positions else 0} raw positions for {user_address}")
+                
+                if not raw_positions:
+                    logger.info(f"Curvance: No positions found for {user_address} (empty positions array)")
+                    return positions
+            except Exception as e:
+                logger.error(f"Curvance: Error calling getAllDynamicState for {user_address}: {e}", exc_info=True)
                 return positions
             
             # Step 2: Get all MarketManagers
             market_managers = protocols.get_curvance_market_managers(self.w3)
-            logger.debug(f"Curvance: Found {len(market_managers)} MarketManagers, {len(raw_positions)} positions")
+            logger.info(f"Curvance: Found {len(market_managers)} MarketManagers, {len(raw_positions)} positions")
             
             # ERC20 ABI for token info
             erc20_abi = [
@@ -193,8 +211,11 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 collateral_raw = position[1]
                 debt_raw = position[2]
                 
+                logger.debug(f"Curvance: Processing position - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}")
+                
                 # Skip if no debt
                 if debt_raw == 0:
+                    logger.debug(f"Curvance: Skipping position with no debt (cToken: {cToken})")
                     continue
                 
                 # Try each MarketManager to find the one that works
@@ -219,19 +240,23 @@ class CurvanceStrategy(LendingProtocolStrategy):
                         position_health_raw, error_code_hit = health_result
                         
                         if error_code_hit:
+                            logger.debug(f"Curvance: getPositionHealth returned error_code_hit=True for MM {mm_address}, cToken {cToken}")
                             continue  # Try next MarketManager
                         
                         if position_health_raw > 0:
                             health_factor = position_health_raw / 1e18
                             market_manager_found = mm_address
+                            logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, health: {health_factor:.3f}")
                             break  # Found working MarketManager
+                        else:
+                            logger.debug(f"Curvance: getPositionHealth returned 0 health for MM {mm_address}, cToken {cToken}")
                     except Exception as e:
-                        logger.debug(f"Error calling getPositionHealth: {e}")
+                        logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
                         continue
                 
                 # Skip if no MarketManager worked
                 if not market_manager_found or not health_factor:
-                    logger.debug(f"Curvance: No working MarketManager found for cToken {cToken}")
+                    logger.warning(f"Curvance: No working MarketManager found for cToken {cToken} (tried {len(market_managers)} MarketManagers)")
                     continue
                 
                 # Skip invalid health factors

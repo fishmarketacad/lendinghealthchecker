@@ -1086,7 +1086,46 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             else:
                                 return f"${value:.2f}"
                         
-                        tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
+                        # For Morpho, use raw borrow amount if available (shows accrual) and add liquidation price
+                        if protocol_id == 'morpho' and market_info:
+                            borrow_amount_raw = market_info.get('borrowAmountRaw')
+                            loan_symbol = market_info.get('loanAsset', '?')
+                            liquidation_price = market_info.get('liquidationPrice')
+                            
+                            if borrow_amount_raw:
+                                # Format raw amount nicely
+                                if borrow_amount_raw >= 1_000_000:
+                                    debt_display = f"{borrow_amount_raw/1_000_000:.2f}M {loan_symbol}"
+                                elif borrow_amount_raw >= 1_000:
+                                    debt_display = f"{borrow_amount_raw/1_000:.2f}K {loan_symbol}"
+                                else:
+                                    debt_display = f"{borrow_amount_raw:.2f} {loan_symbol}"
+                                
+                                # Add liquidation price if available
+                                liquidation_str = ""
+                                if liquidation_price:
+                                    try:
+                                        liq_price_float = float(liquidation_price)
+                                        collateral_symbol = market_info.get('collateralAsset', '?')
+                                        liquidation_str = f" | Liq Price: {liq_price_float:.2f} {loan_symbol}/{collateral_symbol}"
+                                    except (ValueError, TypeError):
+                                        pass
+                                
+                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {debt_display} (${format_currency(debt_usd)}){liquidation_str}"
+                            else:
+                                # Fallback if raw amount not available
+                                liquidation_str = ""
+                                if liquidation_price:
+                                    try:
+                                        liq_price_float = float(liquidation_price)
+                                        collateral_symbol = market_info.get('collateralAsset', '?')
+                                        loan_symbol = market_info.get('loanAsset', '?')
+                                        liquidation_str = f" | Liq Price: {liq_price_float:.2f} {loan_symbol}/{collateral_symbol}"
+                                    except (ValueError, TypeError):
+                                        pass
+                                tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}{liquidation_str}"
+                        else:
+                            tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
                     
                     # Format message based on protocol
                     if protocol_id == 'morpho' and market_info:

@@ -17,6 +17,41 @@ MORPHO_GRAPHQL_URL = "https://api.morpho.org/graphql"
 # Cache for LLTV values (immutable per market, so cache indefinitely)
 _lltv_cache = {}
 
+# Cache for token decimals (immutable per token, so cache indefinitely)
+_token_decimals_cache = {}
+
+# ERC20 ABI for fetching decimals and symbol
+ERC20_ABI = [
+    {"inputs": [], "name": "decimals", "outputs": [{"internalType": "uint8", "name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [], "name": "symbol", "outputs": [{"internalType": "string", "name": "", "type": "string"}], "stateMutability": "view", "type": "function"}
+]
+
+def get_token_decimals(token_address: str, w3) -> int:
+    """
+    Get token decimals from contract, with caching.
+    
+    Args:
+        token_address: Token contract address
+        w3: Web3 instance
+    
+    Returns:
+        Decimals as int (defaults to 18 if query fails)
+    """
+    token_address_lower = token_address.lower()
+    if token_address_lower in _token_decimals_cache:
+        return _token_decimals_cache[token_address_lower]
+    
+    try:
+        token_contract = w3.eth.contract(address=w3.to_checksum_address(token_address), abi=ERC20_ABI)
+        decimals = token_contract.functions.decimals().call()
+        _token_decimals_cache[token_address_lower] = decimals
+        logger.debug(f"Fetched decimals for token {token_address}: {decimals}")
+        return decimals
+    except Exception as e:
+        logger.debug(f"Error fetching decimals for token {token_address}: {e}, defaulting to 18")
+        _token_decimals_cache[token_address_lower] = 18  # Cache default to avoid repeated failures
+        return 18
+
 
 def load_abi(protocol_id: str) -> List[Dict]:
     """Load ABI from JSON file."""

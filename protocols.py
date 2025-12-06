@@ -1032,6 +1032,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     markets = []
     
     try:
+        # Try simplified query first (faster, more reliable)
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1044,17 +1045,9 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                         uniqueKey
                         loanAsset {
                             symbol
-                            decimals
-                            price {
-                                value
-                            }
                         }
                         collateralAsset {
                             symbol
-                            decimals
-                            price {
-                                value
-                            }
                         }
                         collateralFactor
                     }
@@ -1078,12 +1071,46 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
             "chainId": chain_id
         }
         
-        response = requests.post(
-            MORPHO_GRAPHQL_URL,
-            json={"query": query, "variables": variables},
-            headers={"Content-Type": "application/json"},
-            timeout=10
-        )
+        try:
+            response = requests.post(
+                MORPHO_GRAPHQL_URL,
+                json={"query": query, "variables": variables},
+                headers={"Content-Type": "application/json"},
+                timeout=30  # Increased timeout
+            )
+        except requests.exceptions.Timeout:
+            logger.warning(f"Morpho GraphQL query timed out for {address}, trying simpler query...")
+            # Fallback to even simpler query without collateralFactor
+            query_simple = """
+            query GetUserPositions($address: String!, $chainId: Int!) {
+                userByAddress(
+                    chainId: $chainId
+                    address: $address
+                ) {
+                    address
+                    marketPositions {
+                        market {
+                            uniqueKey
+                            loanAsset {
+                                symbol
+                            }
+                            collateralAsset {
+                                symbol
+                            }
+                        }
+                        healthFactor
+                        borrowAssetsUsd
+                        supplyAssetsUsd
+                    }
+                }
+            }
+            """
+            response = requests.post(
+                MORPHO_GRAPHQL_URL,
+                json={"query": query_simple, "variables": variables},
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
         
         if response.status_code == 200:
             data = response.json()

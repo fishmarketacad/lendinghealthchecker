@@ -1125,6 +1125,7 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     
     try:
         # GraphQL Query including token addresses to fetch decimals
+        # Note: collateralAssets is for borrowers (collateral posted), supplyAssets is for lenders (loan token supplied)
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1153,6 +1154,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                     borrowAssetsUsd
                     supplyAssets
                     supplyAssetsUsd
+                    collateralAssets
+                    collateralAssetsUsd
                 }
             }
         }
@@ -1242,19 +1245,16 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             # Debt = (Collateral_Qty * Liq_Price) * LLTV
                             # Liq_Price = Debt / (Collateral_Qty * LLTV)
                             
-                            borrow_usd = float(pos.get('borrowAssetsUsd', 0))
-                            supply_usd = float(pos.get('supplyAssetsUsd', 0))
-                            
                             liquidation_price = 0
                             liquidation_drop_pct = 0
                             
-                            if lltv and lltv > 0 and supply_human > 0:
+                            if lltv and lltv > 0 and collateral_human > 0:
                                 # Calculate the unit price of collateral at which liquidation occurs
-                                liquidation_price = borrow_usd / (supply_human * lltv)
+                                liquidation_price = borrow_usd / (collateral_human * lltv)
                                 
                                 # Calculate current price per unit based on USD value
-                                if supply_usd > 0:
-                                    current_price = supply_usd / supply_human
+                                if collateral_usd > 0:
+                                    current_price = collateral_usd / collateral_human
                                     if current_price > 0:
                                         liquidation_drop_pct = ((current_price - liquidation_price) / current_price) * 100
                             
@@ -1266,8 +1266,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'healthFactor': pos.get('healthFactor'),
                                 'borrowAssetsUsd': borrow_usd,
                                 'borrowAmountHuman': borrow_human,  # Pre-calculated human readable amount
-                                'supplyAssetsUsd': supply_usd,
-                                'supplyAmountHuman': supply_human,  # Pre-calculated human readable amount
+                                'supplyAssetsUsd': collateral_usd,  # Using collateral_usd (prioritizes collateralAssetsUsd)
+                                'supplyAmountHuman': collateral_human,  # Using collateral_human (prioritizes collateralAssets)
                                 'lltv': lltv,
                                 'liquidationPrice': liquidation_price,
                                 'liquidationDropPct': liquidation_drop_pct

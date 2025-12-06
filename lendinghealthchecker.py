@@ -1025,8 +1025,10 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                         market_url = f"https://app.morpho.org/monad/market/{market_id_for_url}/{market_info.get('name', 'unknown')}?subTab=yourPosition"
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     elif protocol_id == 'curvance' and market_id:
-                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
-                        address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                        # Extract MarketManager address from market_id (format: "marketmanager_ctoken" or just "marketmanager")
+                        market_manager_address = market_id.split('_')[0] if '_' in market_id else market_id
+                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     # elif protocol_id == 'euler' and market_id:
                     #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
                     #     # Use the monitored address (not vault address) for the URL
@@ -1271,8 +1273,10 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f}, Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'curvance' and market_id:
-                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
-                        address_message += f"{status}[Curvance Market]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                        # Extract MarketManager address from market_id (format: "marketmanager_ctoken" or just "marketmanager")
+                        market_manager_address = market_id.split('_')[0] if '_' in market_id else market_id
+                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     # elif protocol_id == 'euler' and market_id:
                     #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
                     #     # Use the monitored address (not vault address) for the URL

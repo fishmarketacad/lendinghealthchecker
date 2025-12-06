@@ -204,6 +204,9 @@ class CurvanceStrategy(LendingProtocolStrategy):
             
             zero_address = '0x0000000000000000000000000000000000000000'
             
+            # Track MarketManagers we've already seen to avoid duplicates
+            seen_market_managers = {}  # market_manager -> PositionData (keep worst health)
+            
             # Step 3: For each position, find its MarketManager and get health factor
             for position in raw_positions:
                 # position structure: (cToken, collateral, debt, health, tokenBalance)
@@ -303,25 +306,58 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 
                 logger.debug(f"Curvance: Position found - MM: {market_manager_found}, cToken: {cToken}, health: {health_factor:.3f}")
                 
-                positions.append(PositionData(
-                    protocol_name="Curvance",
-                    market_name=f"Curvance Market",
-                    market_id=market_manager_found,
-                    health_factor=health_factor,
-                    collateral=Asset(
-                        symbol=collateral_symbol,
-                        amount=collateral_amount,
-                        usd_value=collateral_amount,  # Rough estimate
-                        decimals=18
-                    ),
-                    debt=Asset(
-                        symbol=debt_symbol,
-                        amount=debt_amount,
-                        usd_value=debt_amount,  # Rough estimate
-                        decimals=18
-                    ),
-                    app_url=self.app_url
-                ))
+                # Deduplicate by MarketManager - keep position with worst (lowest) health factor
+                mm_key = market_manager_found.lower() if market_manager_found else None
+                if mm_key:
+                    if mm_key not in seen_market_managers:
+                        # First time seeing this MarketManager
+                        seen_market_managers[mm_key] = PositionData(
+                            protocol_name="Curvance",
+                            market_name=f"Curvance Market",
+                            market_id=market_manager_found,
+                            health_factor=health_factor,
+                            collateral=Asset(
+                                symbol=collateral_symbol,
+                                amount=collateral_amount,
+                                usd_value=collateral_amount,  # Rough estimate
+                                decimals=18
+                            ),
+                            debt=Asset(
+                                symbol=debt_symbol,
+                                amount=debt_amount,
+                                usd_value=debt_amount,  # Rough estimate
+                                decimals=18
+                            ),
+                            app_url=self.app_url
+                        )
+                    else:
+                        # Already seen this MarketManager - keep the one with worse (lower) health
+                        existing_position = seen_market_managers[mm_key]
+                        if health_factor < existing_position.health_factor:
+                            logger.debug(f"Curvance: Replacing position for MM {mm_key} with worse health ({health_factor:.3f} < {existing_position.health_factor:.3f})")
+                            seen_market_managers[mm_key] = PositionData(
+                                protocol_name="Curvance",
+                                market_name=f"Curvance Market",
+                                market_id=market_manager_found,
+                                health_factor=health_factor,
+                                collateral=Asset(
+                                    symbol=collateral_symbol,
+                                    amount=collateral_amount,
+                                    usd_value=collateral_amount,  # Rough estimate
+                                    decimals=18
+                                ),
+                                debt=Asset(
+                                    symbol=debt_symbol,
+                                    amount=debt_amount,
+                                    usd_value=debt_amount,  # Rough estimate
+                                    decimals=18
+                                ),
+                                app_url=self.app_url
+                            )
+            
+            # Convert deduplicated positions to list
+            positions = list(seen_market_managers.values())
+            logger.info(f"Curvance: Deduplicated {len(raw_positions)} positions to {len(positions)} unique MarketManagers")
         except Exception as e:
             logger.error(f"Error fetching Curvance positions: {e}", exc_info=True)
         

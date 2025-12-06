@@ -1,6 +1,6 @@
 # Curvance Protocol Integration
 
-## Required Contract Address
+## Required Contract Addresses
 
 To use Curvance health checking, you need the **ProtocolReader** contract address on Monad.
 
@@ -12,32 +12,50 @@ From Curvance's deployment info:
 - `OracleManager`: `0x32fad39e79fac67f80d1c86cbd1598043e52cdb6`
 - `RedstoneClassicAdaptor`: `0x0fa602b3e748438a3f1599206ed6dc497ab3331e`
 - `CentralRegistry`: `0x1310f352f1389969ece6741671c4b919523912ff`
-- `ProtocolReader`: `0xBF67b967eCcf21f2C196f947b703e874D5dB649d`
+- `ProtocolReader`: `0xBF67b967eCcf21f2C196f947b703e874D5dB649d` ✅ **CONFIRMED WORKING**
 
-## Questions to Ask Curvance Team
+## How It Works
 
-1. **What is the ProtocolReader contract address on Monad (Chain ID 143)?**
-   - This is the contract we need to call `getAllDynamicState()` for health factor checking.
+### Discovery Flow
 
-2. **Can we query the ProtocolReader address from CentralRegistry?**
-   - Some protocols store reader/viewer addresses in their registry contracts.
+1. **Query Central Registry** (`0x1310f352f1389969ece6741671c4b919523912ff`)
+   - Call `marketManagers()` to get all registered MarketManager addresses
+   - Falls back to known MarketManager list if registry query fails
 
-3. **Is there an alternative way to query user health factors?**
-   - If ProtocolReader isn't deployed, is there another contract or API we can use?
+2. **Get User Positions** (`ProtocolReader.getAllDynamicState()`)
+   - Returns all user positions with structure: `(cToken, collateral, debt, health, tokenBalance)`
+   - Health factor is included in the response (index 3)
+   - Multiple positions may exist for the same MarketManager (different cTokens)
+
+3. **Get Accurate Health Factor** (`ProtocolReader.getPositionHealth()`)
+   - For each position, try calling `getPositionHealth` with each MarketManager
+   - Parameters: `(mm, account, cToken, borrowableCToken=0, isDeposit=false, collateralAssets=0, isRepayment=false, debtAssets=0, bufferTime=0)`
+   - If `getPositionHealth` returns max uint256 or fails, fallback to health from `getAllDynamicState`
+
+4. **Deduplication**
+   - Multiple positions may map to the same MarketManager
+   - We deduplicate by MarketManager address, keeping the position with the worst (lowest) health factor
+   - This ensures each MarketManager appears only once in the results
+
+### Key Learnings
+
+- **`getAllDynamicState` is reliable**: Always returns health factors, even if `getPositionHealth` fails
+- **`getPositionHealth` can return max uint256**: This indicates an invalid/closed position - filter these out
+- **Fallback strategy works**: When `getPositionHealth` fails, using health from `getAllDynamicState` is accurate
+- **Deduplication is critical**: `getAllDynamicState` can return multiple positions for the same MarketManager (different cTokens), so we must deduplicate by MarketManager address
 
 ## Setup
 
-Once you have the ProtocolReader address, add it to your `.env` file:
-
+The ProtocolReader address is already configured in the code:
 ```bash
-CURVANCE_PROTOCOL_READER_ADDRESS=0x... (actual address)
+CURVANCE_PROTOCOL_READER_ADDRESS=0xBF67b967eCcf21f2C196f947b703e874D5dB649d
 ```
 
 ## Testing
 
 After setting the address, test with:
 ```bash
-/add curvance 1.5 0xYourAddress
-/check
+/check curvance
+/position curvance
 ```
 

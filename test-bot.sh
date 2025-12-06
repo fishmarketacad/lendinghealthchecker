@@ -42,11 +42,11 @@ for COMMAND in "${COMMANDS[@]}"; do
     echo ""
 done
 
-# Check recent logs (last 50 lines)
+# Check recent logs (last 100 lines, filtered for Curvance)
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📋 Recent bot logs:"
+echo "📋 Recent Curvance logs:"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ssh root@167.172.74.216 "pm2 logs lendinghealthchecker --lines 50 --nostream" 2>/dev/null || echo "Could not fetch logs"
+ssh root@167.172.74.216 "pm2 logs lendinghealthchecker --lines 200 --nostream 2>&1 | grep -i 'curvance\|error\|position\|marketmanager\|cToken' | tail -50" 2>/dev/null || echo "Could not fetch logs"
 
 echo ""
 echo "✅ Test complete!"

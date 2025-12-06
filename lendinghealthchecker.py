@@ -1099,62 +1099,43 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                         
                         # For Morpho, show asset quantity with USD in brackets and add liquidation price
                         if protocol_id == 'morpho' and market_info:
-                            collateral_amount = market_info.get('collateralAmount')
                             collateral_symbol = market_info.get('collateralAsset', '?')
-                            borrow_amount_raw = market_info.get('borrowAmountRaw')
                             loan_symbol = market_info.get('loanAsset', '?')
-                            liquidation_price = market_info.get('liquidationPrice')
-                            liquidation_drop_pct_from_market = market_info.get('liquidationDropPct')
                             
-                            # Format collateral: asset quantity (USD)
-                            if collateral_amount is not None:
-                                # Format collateral amount nicely
-                                if collateral_amount >= 1_000_000:
-                                    collateral_display = f"{collateral_amount/1_000_000:.2f}M {collateral_symbol}"
-                                elif collateral_amount >= 1_000:
-                                    collateral_display = f"{collateral_amount/1_000:.2f}K {collateral_symbol}"
-                                elif collateral_amount >= 1:
-                                    collateral_display = f"{collateral_amount:.2f} {collateral_symbol}"
-                                else:
-                                    collateral_display = f"{collateral_amount:.4f} {collateral_symbol}"
-                                collateral_str = f"{collateral_display} ({format_currency(collateral_usd)})"
-                            else:
-                                collateral_str = format_currency(collateral_usd)
+                            collateral_human = market_info.get('supplyAmountHuman', 0)
+                            borrow_human = market_info.get('borrowAmountHuman', 0)
                             
-                            # Format debt: asset quantity (USD) or just USD if raw amount not available
-                            if borrow_amount_raw is not None and borrow_amount_raw > 0:
-                                # Format debt amount nicely
-                                if borrow_amount_raw >= 1_000_000:
-                                    debt_display = f"{borrow_amount_raw/1_000_000:.2f}M {loan_symbol}"
-                                elif borrow_amount_raw >= 1_000:
-                                    debt_display = f"{borrow_amount_raw/1_000:.0f}K {loan_symbol}"
-                                elif borrow_amount_raw >= 1:
-                                    debt_display = f"{borrow_amount_raw:.0f} {loan_symbol}"
-                                else:
-                                    debt_display = f"{borrow_amount_raw:.2f} {loan_symbol}"
-                                debt_str = f"{debt_display} ({format_currency(debt_usd)})"
-                            else:
-                                debt_str = format_currency(debt_usd)
+                            # Format Amounts (e.g., 1.02 or 50k)
+                            def format_amount(val):
+                                if val >= 1_000_000:
+                                    return f"{val/1_000_000:.2f}M"
+                                if val >= 1_000:
+                                    return f"{val/1_000:.1f}K"
+                                if val >= 1:
+                                    return f"{val:.2f}"
+                                return f"{val:.4f}"
                             
-                            # Add liquidation price if available
-                            liquidation_str = ""
-                            if liquidation_price:
-                                try:
-                                    liq_price_float = float(liquidation_price)
-                                    drop_pct = liquidation_drop_pct_from_market if liquidation_drop_pct_from_market is not None else None
-                                    
-                                    # Format liquidation price with commas
-                                    liq_price_formatted = f"${liq_price_float:,.2f}"
-                                    
-                                    if drop_pct is not None:
-                                        liquidation_str = f"\nLiquidation price: {liq_price_formatted} ({drop_pct:.1f}% drop to liquidation)"
-                                    else:
-                                        liquidation_str = f"\nLiquidation price: {liq_price_formatted}"
-                                except (ValueError, TypeError) as e:
-                                    logger.debug(f"Error formatting liquidation price: {e}")
-                                    pass
+                            def format_usd(val):
+                                if val >= 1_000_000:
+                                    return f"${val/1_000_000:.2f}M"
+                                if val >= 1_000:
+                                    return f"${val/1_000:.2f}K"
+                                return f"${val:.2f}"
                             
-                            tvl_debt_str = f"\nCollateral: {collateral_str} | Debt: {debt_str}{liquidation_str}"
+                            col_str = f"{format_amount(collateral_human)} {collateral_symbol} ({format_usd(collateral_usd)})"
+                            deb_str = f"{format_amount(borrow_human)} {loan_symbol} ({format_usd(debt_usd)})"
+                            
+                            # Liquidation Info
+                            liq_price = market_info.get('liquidationPrice', 0)
+                            drop_pct = market_info.get('liquidationDropPct', 0)
+                            
+                            liq_str = ""
+                            if liq_price > 0:
+                                # Smart formatting for price (handle small vs large prices)
+                                price_fmt = f"${liq_price:,.2f}" if liq_price > 1 else f"${liq_price:.4f}"
+                                liq_str = f"\nLiquidation price: {price_fmt} ({drop_pct:.1f}% drop to liquidation)"
+                            
+                            tvl_debt_str = f"\nCollateral: {col_str} | Debt: {deb_str}{liq_str}"
                         else:
                             tvl_debt_str = f"\nCollateral: {format_currency(collateral_usd)} | Debt: {format_currency(debt_usd)}"
                     

@@ -914,7 +914,7 @@ def get_morpho_user_vaults(address: str, chain_id: int = 143) -> List[Dict]:
             MORPHO_GRAPHQL_URL,
             json={"query": query, "variables": variables},
             headers={"Content-Type": "application/json"},
-            timeout=30
+            timeout=10
         )
         
         if response.status_code == 200:
@@ -1177,39 +1177,76 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                     
                     for pos in positions:
                         market = pos.get('market', {})
-                        market_unique_key = market.get('uniqueKey')
+                        market_unique_key = market.get('uniqueKey') or market.get('id')
+                        
                         if market_unique_key:
+                            # 1. Extract Basic Market Info
                             loan_asset = market.get('loanAsset', {})
                             collateral_asset = market.get('collateralAsset', {})
+                            
                             loan_symbol = loan_asset.get('symbol', '?')
                             collateral_symbol = collateral_asset.get('symbol', '?')
                             market_name = f"{collateral_symbol}-{loan_symbol}".lower()
                             
-                            # Extract market details
-                            market_data = pos.get('market', {})
-                            lltv = market_data.get('lltv')  # May not be available for Monad
+                            # 2. Get/Verify LLTV
+                            lltv = market.get('lltv')
                             
-                            # Get liquidation price if available (may not be available for Monad)
-                            liquidation_price = pos.get('liquidationPrice')
-                            
-                            # Get raw borrow amount (for accurate debt display with accrual)
-                            borrow_assets_raw = pos.get('borrowAssets', '0')
-                            loan_asset_data = market_data.get('loanAsset', {})
-                            # Try to get decimals, but default to 18 if not available
-                            loan_decimals = loan_asset_data.get('decimals', 18)
-                            
-                            # Calculate raw borrow amount in human-readable format
-                            borrow_amount_raw = None
-                            if borrow_assets_raw and borrow_assets_raw != '0':
-                                try:
-                                    # borrowAssets from GraphQL is already a string, convert to float
-                                    borrow_amount_raw = float(borrow_assets_raw) / (10 ** loan_decimals)
-                                    logger.debug(f"Converted borrowAssets '{borrow_assets_raw}' with decimals {loan_decimals} to {borrow_amount_raw}")
-                                except (ValueError, TypeError) as e:
-                                    logger.debug(f"Error converting borrowAssets '{borrow_assets_raw}': {e}")
-                                    pass
+                            # If LLTV missing from Graph, fetch from contract
+                            if lltv is None and chain_id == 143:
+                                morpho_address = os.environ.get('MORPHO_BLUE_ADDRESS', '0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee')
+                                morpho_abi = load_abi('morpho')
+                                contract = w3.eth.contract(address=morpho_address, abi=morpho_abi)
+                                lltv = get_morpho_market_lltv(market_unique_key, contract, w3)
                             else:
-                                logger.debug(f"borrowAssets is empty or '0': '{borrow_assets_raw}'")
+                                # GraphQL usually returns LLTV as a scaled integer string (e.g., "860000000000000000")
+                                # or sometimes a float depending on the specific API version.
+                                # Safe parsing:
+                                try:
+                                    lltv = float(lltv)
+                                    if lltv > 1.0:  # It's in WAD (1e18)
+                                        lltv = lltv / 1e18
+                                except (ValueError, TypeError):
+                                    lltv = 0
+                            
+                            # 3. Calculate Token Amounts
+                            # Get Decimals (Try API, fallback to Chain)
+                            loan_decimals = loan_asset.get('decimals')
+                            if loan_decimals is None and loan_asset.get('address'):
+                                loan_decimals = get_token_decimals(loan_asset['address'], w3)
+                            loan_decimals = loan_decimals if loan_decimals is not None else 18
+                            
+                            coll_decimals = collateral_asset.get('decimals')
+                            if coll_decimals is None and collateral_asset.get('address'):
+                                coll_decimals = get_token_decimals(collateral_asset['address'], w3)
+                            coll_decimals = coll_decimals if coll_decimals is not None else 18
+                            
+                            # Calculate Readable Amounts
+                            borrow_raw = float(pos.get('borrowAssets', 0))
+                            borrow_human = borrow_raw / (10 ** loan_decimals)
+                            
+                            supply_raw = float(pos.get('supplyAssets', 0))
+                            supply_human = supply_raw / (10 ** coll_decimals)
+                            
+                            # 4. Calculate Liquidation Price
+                            # Logic: At liquidation, Debt Value = Collateral Value * LLTV
+                            # Debt = (Collateral_Qty * Liq_Price) * LLTV
+                            # Liq_Price = Debt / (Collateral_Qty * LLTV)
+                            
+                            borrow_usd = float(pos.get('borrowAssetsUsd', 0))
+                            supply_usd = float(pos.get('supplyAssetsUsd', 0))
+                            
+                            liquidation_price = 0
+                            liquidation_drop_pct = 0
+                            
+                            if lltv and lltv > 0 and supply_human > 0:
+                                # Calculate the unit price of collateral at which liquidation occurs
+                                liquidation_price = borrow_usd / (supply_human * lltv)
+                                
+                                # Calculate current price per unit based on USD value
+                                if supply_usd > 0:
+                                    current_price = supply_usd / supply_human
+                                    if current_price > 0:
+                                        liquidation_drop_pct = ((current_price - liquidation_price) / current_price) * 100
                             
                             markets.append({
                                 'id': market_unique_key,
@@ -1217,13 +1254,13 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'loanAsset': loan_symbol,
                                 'collateralAsset': collateral_symbol,
                                 'healthFactor': pos.get('healthFactor'),
-                                'borrowAssets': borrow_assets_raw,
-                                'borrowAssetsUsd': pos.get('borrowAssetsUsd', 0),
-                                'borrowAmountRaw': borrow_amount_raw,  # Human-readable borrow amount (includes accrual)
-                                'supplyAssets': pos.get('supplyAssets', '0'),
-                                'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0),
-                                'lltv': lltv,  # May be None if not available from GraphQL
-                                'liquidationPrice': liquidation_price
+                                'borrowAssetsUsd': borrow_usd,
+                                'borrowAmountHuman': borrow_human,  # Pre-calculated human readable amount
+                                'supplyAssetsUsd': supply_usd,
+                                'supplyAmountHuman': supply_human,  # Pre-calculated human readable amount
+                                'lltv': lltv,
+                                'liquidationPrice': liquidation_price,
+                                'liquidationDropPct': liquidation_drop_pct
                             })
                     
                     # Fetch LLTV and raw borrow amount from contract for markets where they're missing

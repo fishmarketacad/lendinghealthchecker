@@ -445,8 +445,8 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
         account_lens_addr = account_lens_address or '0x960D481229f70c3c1CBCD3fA2d223f55Db9f36Ee'
         evc_addr = evc_address or '0x7a9324E8f270413fa2E458f5831226d99C7477CD'
         
-        # Load AccountLens ABI from file
-        account_lens_abi = load_abi('accountlens')
+        # Load AccountLens ABI from file (case-sensitive filename)
+        account_lens_abi = load_abi('AccountLens')
         if not account_lens_abi:
             logger.error("Failed to load AccountLens ABI")
             return []

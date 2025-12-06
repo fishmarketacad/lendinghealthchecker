@@ -184,15 +184,23 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 collateral_amount = detail.get('collateral_amount', 0)
                 debt_amount = detail.get('debt_amount', 0)
                 
+                # Skip if no debt (supply-only position)
+                if debt_amount == 0:
+                    continue
+                
                 # Curvance doesn't provide USD values, estimate from amounts
                 # (In production, would use price oracle)
+                # Use debt_amount for USD value check to ensure position isn't filtered
                 collateral_usd = collateral_amount  # Rough estimate
-                debt_usd = debt_amount  # Rough estimate
+                debt_usd = debt_amount  # Rough estimate - ensure it's > 0 for validation
+                
+                # Use cToken as market_id (it's the MarketManager address)
+                market_id = detail.get('cToken', 'curvance')
                 
                 positions.append(PositionData(
                     protocol_name="Curvance",
                     market_name=f"Curvance Market",
-                    market_id=detail.get('cToken', 'curvance'),
+                    market_id=market_id,
                     health_factor=float(health_factor),
                     collateral=Asset(
                         symbol=collateral_symbol,

@@ -730,6 +730,9 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
                 'debt_amount': pos_data.debt.amount,
                 'collateral_symbol': pos_data.collateral.symbol,
                 'debt_symbol': pos_data.debt.symbol,
+                'collateral_token': pos_data.collateral.symbol,  # For Curvance compatibility
+                'debt_token': pos_data.debt.symbol,  # For Curvance compatibility
+                'cToken': pos_data.market_id,  # For Curvance compatibility (market_id is cToken/MarketManager)
                 'collateralAsset': pos_data.collateral.symbol,  # For Morpho compatibility (used in build_position_message)
                 'loanAsset': pos_data.debt.symbol,  # For Morpho compatibility (used in build_position_message)
                 'liquidation_price': pos_data.liquidation_price,

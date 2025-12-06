@@ -787,8 +787,11 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
         except Exception as e:
             logger.error(f"Error checking Curvance for {address}: {e}")
     
-    # Check Euler - auto-discover all vaults (similar to Morpho markets)
-    if filter_protocol is None or filter_protocol == 'euler':
+    # Check Euler - DISABLED
+    # getAccountEnabledVaultsInfo only returns EVC-enabled vaults, not isolated vaults
+    # Isolated vaults (like shMON-WMON-AUSD) require a different discovery method
+    # TODO: Implement alternative discovery method for isolated vaults
+    if False:  # Temporarily disabled until we find the right discovery method
         try:
             protocol_info = PROTOCOL_CONFIG['euler']
             conn = protocol_connections['euler']

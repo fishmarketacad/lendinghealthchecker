@@ -212,3 +212,70 @@ class CurvanceStrategy(LendingProtocolStrategy):
         
         return positions
 
+
+class EulerStrategy(LendingProtocolStrategy):
+    """Strategy for Euler V2 protocol."""
+    
+    def __init__(self, w3: Web3, account_lens_address: str, evc_address: str, app_url: str):
+        self.w3 = w3
+        self.account_lens_address = account_lens_address
+        self.evc_address = evc_address
+        self.app_url = app_url
+    
+    def get_name(self) -> str:
+        return "Euler"
+    
+    def get_protocol_id(self) -> str:
+        return "euler"
+    
+    def get_positions(self, user_address: str) -> List[PositionData]:
+        """Get Euler positions for a user."""
+        positions = []
+        
+        try:
+            # Get all vaults where user has positions
+            vaults_data = protocols.get_euler_user_vaults(
+                user_address,
+                self.w3,
+                self.account_lens_address,
+                self.evc_address
+            )
+            
+            for vault in vaults_data:
+                vault_address = vault.get('vault_address', '')
+                hf = vault.get('health_factor')
+                collateral_usd = vault.get('collateral_usd', 0)
+                debt_usd = vault.get('debt_usd', 0)
+                
+                # Skip invalid positions
+                if not hf or float(hf) > 1e10 or debt_usd == 0:
+                    continue
+                
+                # Euler vaults don't have token symbols easily accessible
+                # Use vault address short form as identifier
+                vault_short = vault_address[:6] + '...' + vault_address[-4:] if len(vault_address) > 10 else vault_address
+                
+                positions.append(PositionData(
+                    protocol_name="Euler",
+                    market_name=f"Euler Vault ({vault_short})",
+                    market_id=vault_address.lower(),
+                    health_factor=float(hf),
+                    collateral=Asset(
+                        symbol="?",  # Token symbol not easily available from vault
+                        amount=0,  # Amount not easily available without token decimals
+                        usd_value=collateral_usd,
+                        decimals=18
+                    ),
+                    debt=Asset(
+                        symbol="?",  # Token symbol not easily available from vault
+                        amount=0,  # Amount not easily available without token decimals
+                        usd_value=debt_usd,
+                        decimals=18
+                    ),
+                    app_url=self.app_url
+                ))
+        except Exception as e:
+            logger.error(f"Error fetching Euler positions: {e}", exc_info=True)
+        
+        return positions
+

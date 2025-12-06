@@ -101,17 +101,20 @@ class MorphoStrategy(LendingProtocolStrategy):
                 collateral_symbol = market.get('collateralAsset', '?')
                 
                 # Get amounts (prioritize human-readable amounts from contract)
-                collateral_human = market.get('supplyAmountHuman', 0)
-                borrow_human = market.get('borrowAmountHuman', 0)
-                collateral_usd = market.get('supplyAssetsUsd', 0)
+                # Handle None values and ensure they're floats
+                collateral_human = float(market.get('supplyAmountHuman', 0) or 0)
+                borrow_human = float(market.get('borrowAmountHuman', 0) or 0)
+                collateral_usd = float(market.get('supplyAssetsUsd', 0) or 0)
                 
                 # Get decimals
                 loan_decimals = 18  # Default
                 coll_decimals = 18  # Default
                 
                 # Get liquidation info
-                liquidation_price = market.get('liquidationPrice', 0)
-                liquidation_drop_pct = market.get('liquidationDropPct', 0)
+                liquidation_price = market.get('liquidationPrice')
+                liquidation_drop_pct = market.get('liquidationDropPct')
+                liquidation_price = float(liquidation_price) if liquidation_price is not None and liquidation_price > 0 else None
+                liquidation_drop_pct = float(liquidation_drop_pct) if liquidation_drop_pct is not None and liquidation_drop_pct > 0 else None
                 
                 positions.append(PositionData(
                     protocol_name="Morpho",

@@ -654,181 +654,181 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
     
     # Check Neverland
     if filter_protocol is None or filter_protocol == 'neverland':
-    try:
-        cache_key = f"neverland_{address}"
-        health_factor = get_cached_or_fetch(
-            cache_key,
-            check_health_factor,
-            address,
-            'neverland'
-        )
-        
-        if is_valid_position(health_factor):
-            threshold = get_threshold_for_position(chat_id, address, 'neverland')
-            # Get collateral and debt data
-            neverland_info = None
-            try:
-                protocol_info = PROTOCOL_CONFIG['neverland']
-                conn = protocol_connections['neverland']
-                cache_key_data = f"neverland_data_{address}"
-                account_data = get_cached_or_fetch(
-                    cache_key_data,
-                    protocols.get_neverland_account_data,
-                    address,
-                    conn['contract'],
-                    conn['w3']
-                )
-                if account_data:
-                    neverland_info = {
-                        'collateral_usd': account_data.get('collateral_usd', 0),
-                        'debt_usd': account_data.get('debt_usd', 0)
-                    }
-            except Exception as e:
-                logger.debug(f"Could not get Neverland account data: {e}")
+        try:
+            cache_key = f"neverland_{address}"
+            health_factor = get_cached_or_fetch(
+                cache_key,
+                check_health_factor,
+                address,
+                'neverland'
+            )
             
-            positions.append({
-                'protocol_id': 'neverland',
-                'market_id': None,
-                'health_factor': health_factor,
-                'threshold': threshold,
-                'market_info': neverland_info
-            })
-    except Exception as e:
-        logger.error(f"Error checking Neverland for {address}: {e}")
+            if is_valid_position(health_factor):
+                threshold = get_threshold_for_position(chat_id, address, 'neverland')
+                # Get collateral and debt data
+                neverland_info = None
+                try:
+                    protocol_info = PROTOCOL_CONFIG['neverland']
+                    conn = protocol_connections['neverland']
+                    cache_key_data = f"neverland_data_{address}"
+                    account_data = get_cached_or_fetch(
+                        cache_key_data,
+                        protocols.get_neverland_account_data,
+                        address,
+                        conn['contract'],
+                        conn['w3']
+                    )
+                    if account_data:
+                        neverland_info = {
+                            'collateral_usd': account_data.get('collateral_usd', 0),
+                            'debt_usd': account_data.get('debt_usd', 0)
+                        }
+                except Exception as e:
+                    logger.debug(f"Could not get Neverland account data: {e}")
+                
+                positions.append({
+                    'protocol_id': 'neverland',
+                    'market_id': None,
+                    'health_factor': health_factor,
+                    'threshold': threshold,
+                    'market_info': neverland_info
+                })
+        except Exception as e:
+            logger.error(f"Error checking Neverland for {address}: {e}")
     
     # Check Morpho - auto-discover all markets
     if filter_protocol is None or filter_protocol == 'morpho':
         try:
-        protocol_info = PROTOCOL_CONFIG['morpho']
-        cache_key = f"morpho_markets_{address}"
-        markets_data = get_cached_or_fetch(
-            cache_key,
-            get_morpho_user_markets,
-            address,
-            protocol_info['chain_id']
-        )
-        
-        if markets_data:
-            for market in markets_data:
-                hf = market.get('healthFactor')
-                borrow_amount = market.get('borrowAssetsUsd', 0)
-                
-                if is_valid_position(hf, borrow_amount):
-                    market_id = market['id'].lower()
-                    threshold = get_threshold_for_position(chat_id, address, 'morpho', market_id)
-                    positions.append({
-                        'protocol_id': 'morpho',
-                        'market_id': market_id,
-                        'health_factor': float(hf),
-                        'threshold': threshold,
-                        'market_info': market
-                    })
+            protocol_info = PROTOCOL_CONFIG['morpho']
+            cache_key = f"morpho_markets_{address}"
+            markets_data = get_cached_or_fetch(
+                cache_key,
+                get_morpho_user_markets,
+                address,
+                protocol_info['chain_id']
+            )
+            
+            if markets_data:
+                for market in markets_data:
+                    hf = market.get('healthFactor')
+                    borrow_amount = market.get('borrowAssetsUsd', 0)
+                    
+                    if is_valid_position(hf, borrow_amount):
+                        market_id = market['id'].lower()
+                        threshold = get_threshold_for_position(chat_id, address, 'morpho', market_id)
+                        positions.append({
+                            'protocol_id': 'morpho',
+                            'market_id': market_id,
+                            'health_factor': float(hf),
+                            'threshold': threshold,
+                            'market_info': market
+                        })
         except Exception as e:
             logger.error(f"Error checking Morpho for {address}: {e}")
     
     # Check Curvance - auto-discover all MarketManagers
     if filter_protocol is None or filter_protocol == 'curvance':
         try:
-        protocol_info = PROTOCOL_CONFIG['curvance']
-        conn = protocol_connections['curvance']
-        
-        # Get all MarketManagers from Central Registry
-        cache_key = f"curvance_managers"
-        market_managers = get_cached_or_fetch(
-            cache_key,
-            protocols.get_curvance_market_managers,
-            conn['w3']
-        )
-        
-        # Check each MarketManager for positions
-        for market_manager in market_managers:
-            try:
-                cache_key_market = f"curvance_{address}_{market_manager}"
-                health_factor = get_cached_or_fetch(
-                    cache_key_market,
-                    protocols.check_curvance_health_factor,
-                    address,
-                    conn['contract'],
-                    conn['w3'],
-                    market_manager,
-                    None
-                )
-                
-                if is_valid_position(health_factor):
-                    threshold = get_threshold_for_position(chat_id, address, 'curvance', market_manager)
-                    # Get position details (token symbols and amounts)
-                    try:
-                        cache_key_details = f"curvance_details_{address}_{market_manager}"
-                        position_details_list = get_cached_or_fetch(
-                            cache_key_details,
-                            protocols.get_curvance_position_details,
-                            address,
-                            conn['contract'],
-                            conn['w3'],
-                            market_manager,
-                            None
-                        )
-                        # Use first position detail if available
-                        curvance_info = position_details_list[0] if position_details_list else None
-                    except Exception as e:
-                        logger.debug(f"Could not get Curvance position details: {e}")
-                        curvance_info = None
+            protocol_info = PROTOCOL_CONFIG['curvance']
+            conn = protocol_connections['curvance']
+            
+            # Get all MarketManagers from Central Registry
+            cache_key = f"curvance_managers"
+            market_managers = get_cached_or_fetch(
+                cache_key,
+                protocols.get_curvance_market_managers,
+                conn['w3']
+            )
+            
+            # Check each MarketManager for positions
+            for market_manager in market_managers:
+                try:
+                    cache_key_market = f"curvance_{address}_{market_manager}"
+                    health_factor = get_cached_or_fetch(
+                        cache_key_market,
+                        protocols.check_curvance_health_factor,
+                        address,
+                        conn['contract'],
+                        conn['w3'],
+                        market_manager,
+                        None
+                    )
                     
-                    positions.append({
-                        'protocol_id': 'curvance',
-                        'market_id': market_manager,
-                        'health_factor': health_factor,
-                        'threshold': threshold,
-                        'market_info': curvance_info
-                    })
-            except Exception as e:
-                logger.debug(f"Error checking Curvance MarketManager {market_manager} for {address}: {e}")
-                continue
+                    if is_valid_position(health_factor):
+                        threshold = get_threshold_for_position(chat_id, address, 'curvance', market_manager)
+                        # Get position details (token symbols and amounts)
+                        try:
+                            cache_key_details = f"curvance_details_{address}_{market_manager}"
+                            position_details_list = get_cached_or_fetch(
+                                cache_key_details,
+                                protocols.get_curvance_position_details,
+                                address,
+                                conn['contract'],
+                                conn['w3'],
+                                market_manager,
+                                None
+                            )
+                            # Use first position detail if available
+                            curvance_info = position_details_list[0] if position_details_list else None
+                        except Exception as e:
+                            logger.debug(f"Could not get Curvance position details: {e}")
+                            curvance_info = None
+                        
+                        positions.append({
+                            'protocol_id': 'curvance',
+                            'market_id': market_manager,
+                            'health_factor': health_factor,
+                            'threshold': threshold,
+                            'market_info': curvance_info
+                        })
+                except Exception as e:
+                    logger.debug(f"Error checking Curvance MarketManager {market_manager} for {address}: {e}")
+                    continue
         except Exception as e:
             logger.error(f"Error checking Curvance for {address}: {e}")
     
     # Check Euler - auto-discover all vaults (similar to Morpho markets)
     if filter_protocol is None or filter_protocol == 'euler':
         try:
-        protocol_info = PROTOCOL_CONFIG['euler']
-        conn = protocol_connections['euler']
-        
-        logger.info(f"Checking Euler for {address}...")
-        
-        # Get all vaults where user has positions using AccountLens
-        cache_key = f"euler_vaults_{address}"
-        vaults_data = get_cached_or_fetch(
-            cache_key,
-            protocols.get_euler_user_vaults,
-            address,
-            conn['w3'],
-            protocol_info.get('account_lens_address'),
-            protocol_info.get('pool_address')  # EVC address
-        )
-        
-        logger.info(f"Euler query returned {len(vaults_data) if vaults_data else 0} vaults for {address}")
-        
-        if vaults_data:
-            for vault in vaults_data:
-                hf = vault.get('health_factor')
-                debt_usd = vault.get('debt_usd', 0)
-                vault_address = vault.get('vault_address', '')
-                
-                logger.debug(f"Euler vault {vault_address}: hf={hf}, debt=${debt_usd}")
-                
-                if is_valid_position(hf, debt_usd):
-                    vault_address_lower = vault_address.lower() if vault_address else ''
-                    threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address_lower)
-                    positions.append({
-                        'protocol_id': 'euler',
-                        'market_id': vault_address_lower,
-                        'health_factor': float(hf),
-                        'threshold': threshold,
-                        'market_info': vault
-                    })
-                    logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
-                else:
-                    logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
+            protocol_info = PROTOCOL_CONFIG['euler']
+            conn = protocol_connections['euler']
+            
+            logger.info(f"Checking Euler for {address}...")
+            
+            # Get all vaults where user has positions using AccountLens
+            cache_key = f"euler_vaults_{address}"
+            vaults_data = get_cached_or_fetch(
+                cache_key,
+                protocols.get_euler_user_vaults,
+                address,
+                conn['w3'],
+                protocol_info.get('account_lens_address'),
+                protocol_info.get('pool_address')  # EVC address
+            )
+            
+            logger.info(f"Euler query returned {len(vaults_data) if vaults_data else 0} vaults for {address}")
+            
+            if vaults_data:
+                for vault in vaults_data:
+                    hf = vault.get('health_factor')
+                    debt_usd = vault.get('debt_usd', 0)
+                    vault_address = vault.get('vault_address', '')
+                    
+                    logger.debug(f"Euler vault {vault_address}: hf={hf}, debt=${debt_usd}")
+                    
+                    if is_valid_position(hf, debt_usd):
+                        vault_address_lower = vault_address.lower() if vault_address else ''
+                        threshold = get_threshold_for_position(chat_id, address, 'euler', vault_address_lower)
+                        positions.append({
+                            'protocol_id': 'euler',
+                            'market_id': vault_address_lower,
+                            'health_factor': float(hf),
+                            'threshold': threshold,
+                            'market_info': vault
+                        })
+                        logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
+                    else:
+                        logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
             else:
                 logger.info(f"No Euler vaults found for {address}")
         except Exception as e:
@@ -859,11 +859,12 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
     # Process each address
     for address in addresses:
         try:
-            # Auto-discover all positions
-            positions = await discover_all_positions(address, chat_id)
+            # Auto-discover all positions (only check specified protocol if filter provided)
+            positions = await discover_all_positions(address, chat_id, filter_protocol=filter_protocol)
             
             if not positions:
-                messages.append(f"For {address}:\n\nNo active positions found.")
+                protocol_text = f" for {PROTOCOL_CONFIG[filter_protocol]['name']} protocol" if filter_protocol else ""
+                messages.append(f"For {address}:\n\nNo active positions found{protocol_text}.")
                 continue
             
             # Group positions by protocol
@@ -955,11 +956,12 @@ async def build_position_message(chat_id: str, addresses: List[str]) -> Optional
     # Process each address
     for address in addresses:
         try:
-            # Auto-discover all positions
-            positions = await discover_all_positions(address, chat_id)
+            # Auto-discover all positions (only check specified protocol if filter provided)
+            positions = await discover_all_positions(address, chat_id, filter_protocol=filter_protocol)
             
             if not positions:
-                messages.append(f"For {address}:\n\nNo active positions found.")
+                protocol_text = f" for {PROTOCOL_CONFIG[filter_protocol]['name']} protocol" if filter_protocol else ""
+                messages.append(f"For {address}:\n\nNo active positions found{protocol_text}.")
                 continue
             
             # Group positions by protocol

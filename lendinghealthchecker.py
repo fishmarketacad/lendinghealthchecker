@@ -1242,12 +1242,14 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             col_str = f"{format_amount(collateral_human)} {collateral_symbol} ({format_usd(collateral_usd)})"
                             deb_str = f"{format_amount(borrow_human)} {loan_symbol} ({format_usd(debt_usd)})"
                             
-                            # Liquidation Info
-                            liq_price = market_info.get('liquidationPrice', 0)
-                            drop_pct = market_info.get('liquidationDropPct', 0)
+                            # Liquidation Info - check both camelCase and snake_case keys
+                            liq_price = market_info.get('liquidationPrice') or market_info.get('liquidation_price')
+                            drop_pct = market_info.get('liquidationDropPct') or market_info.get('liquidation_drop_pct')
                             
                             liq_str = ""
-                            if liq_price > 0:
+                            if liq_price and float(liq_price) > 0:
+                                liq_price = float(liq_price)
+                                drop_pct = float(drop_pct) if drop_pct else 0
                                 # Smart formatting for price (handle small vs large prices)
                                 price_fmt = f"${liq_price:,.2f}" if liq_price > 1 else f"${liq_price:.4f}"
                                 liq_str = f"\nLiquidation price: {price_fmt} ({drop_pct:.1f}% drop to liquidation)"

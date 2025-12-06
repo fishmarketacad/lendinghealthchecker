@@ -10,6 +10,8 @@ from typing import Optional, List, Dict
 from time import time
 import protocols
 import rebalancing
+from protocol_strategy import ProtocolManager, PositionData
+from protocol_strategies_impl import NeverlandStrategy, MorphoStrategy, CurvanceStrategy
 
 # Unique instance identifier to track duplicate instances
 import socket
@@ -97,7 +99,7 @@ TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 USER_DATA_FILE = os.environ.get('USER_DATA_FILE', 'lendinghealthchatids.json')
 CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', 3600))  # Default to 1 hour
 
-# Initialize Web3 connections for each protocol
+# Initialize Web3 connections for each protocol (kept for backward compatibility)
 protocol_connections = {}
 for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
     w3 = Web3(Web3.HTTPProvider(protocol_info['rpc_url']))
@@ -108,6 +110,40 @@ for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
         'contract': contract,
         'protocol': protocol_info
     }
+
+# Initialize ProtocolManager with strategies (new Strategy Pattern approach)
+protocol_manager = ProtocolManager()
+
+# Register Neverland strategy
+neverland_conn = protocol_connections['neverland']
+protocol_manager.register_strategy(
+    NeverlandStrategy(
+        neverland_conn['contract'],
+        neverland_conn['w3'],
+        PROTOCOL_CONFIG['neverland']['app_url']
+    )
+)
+
+# Register Morpho strategy
+morpho_info = PROTOCOL_CONFIG['morpho']
+morpho_conn = protocol_connections['morpho']
+protocol_manager.register_strategy(
+    MorphoStrategy(
+        morpho_conn['w3'],
+        morpho_info['chain_id'],
+        morpho_info['app_url']
+    )
+)
+
+# Register Curvance strategy
+curvance_conn = protocol_connections['curvance']
+protocol_manager.register_strategy(
+    CurvanceStrategy(
+        curvance_conn['contract'],
+        curvance_conn['w3'],
+        PROTOCOL_CONFIG['curvance']['app_url']
+    )
+)
 
 # Debug: Print environment variables
 print("TELEGRAM_BOT_TOKEN:", "SET" if TOKEN else "NOT SET")
@@ -634,9 +670,11 @@ async def remove_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"✅ Removed {address} from monitoring.")
 
 # Function to auto-discover all positions for an address across all protocols
+# NEW: Uses Strategy Pattern for clean, scalable architecture
 async def discover_all_positions(address: str, chat_id: str, filter_protocol: Optional[str] = None) -> List[Dict]:
     """
     Auto-discover all active positions for an address across all protocols.
+    Uses Strategy Pattern - no more if/else spaghetti!
     
     Args:
         address: Wallet address to check
@@ -645,6 +683,61 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
     
     Returns:
         List of position dicts with: protocol_id, market_id, health_factor, threshold, etc.
+    """
+    positions = []
+    address_data = user_data[chat_id].get('addresses', {}).get(address, {})
+    
+    # Use ProtocolManager to get all positions (clean, no if/else!)
+    try:
+        position_data_list = protocol_manager.get_all_positions(address, filter_protocol)
+        
+        for pos_data in position_data_list:
+            # Skip invalid positions
+            if not is_valid_position(pos_data.health_factor, pos_data.debt.usd_value):
+                continue
+            
+            # Map protocol_name to protocol_id
+            protocol_name_to_id = {
+                'Neverland': 'neverland',
+                'Morpho': 'morpho',
+                'Curvance': 'curvance'
+            }
+            protocol_id = protocol_name_to_id.get(pos_data.protocol_name, pos_data.protocol_name.lower())
+            market_id = pos_data.market_id.lower() if pos_data.market_id else None
+            
+            # Get threshold for this position
+            threshold = get_threshold_for_position(chat_id, address, protocol_id, market_id)
+            
+            # Convert PositionData to dict format (for backward compatibility)
+            market_info = {
+                'collateral_usd': pos_data.collateral.usd_value,
+                'debt_usd': pos_data.debt.usd_value,
+                'collateral_amount': pos_data.collateral.amount,
+                'debt_amount': pos_data.debt.amount,
+                'collateral_symbol': pos_data.collateral.symbol,
+                'debt_symbol': pos_data.debt.symbol,
+                'liquidation_price': pos_data.liquidation_price,
+                'liquidation_drop_pct': pos_data.liquidation_drop_pct
+            }
+            
+            positions.append({
+                'protocol_id': protocol_id,
+                'market_id': market_id,
+                'health_factor': pos_data.health_factor,
+                'threshold': threshold,
+                'market_info': market_info,
+                'position_data': pos_data  # Keep full PositionData for new code
+            })
+    except Exception as e:
+        logger.error(f"Error discovering positions for {address}: {e}", exc_info=True)
+    
+    return positions
+
+# OLD CODE BELOW - KEPT FOR REFERENCE BUT NOT USED
+# This can be removed once we verify the Strategy Pattern works correctly
+async def discover_all_positions_OLD(address: str, chat_id: str, filter_protocol: Optional[str] = None) -> List[Dict]:
+    """
+    OLD IMPLEMENTATION - Keeping for reference only.
     """
     positions = []
     address_data = user_data[chat_id].get('addresses', {}).get(address, {})
@@ -700,7 +793,7 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
             cache_key = f"morpho_markets_{address}"
             markets_data = get_cached_or_fetch(
                 cache_key,
-                get_morpho_user_markets,
+                protocols.get_morpho_user_markets,
                 address,
                 protocol_info['chain_id']
             )

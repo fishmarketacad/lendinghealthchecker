@@ -567,6 +567,83 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
             import traceback
             logger.debug(traceback.format_exc())
         
+        # Also check known isolated vault addresses using getAccountInfo
+        logger.info(f"Checking {len(KNOWN_EULER_VAULTS)} known isolated vaults for {address}")
+        for vault_address in KNOWN_EULER_VAULTS:
+            try:
+                vault_address_checksum = w3.to_checksum_address(vault_address)
+                logger.debug(f"Checking isolated vault {vault_address_checksum} using getAccountInfo")
+                
+                # Use getAccountInfo for this specific vault
+                account_info = account_lens_contract.functions.getAccountInfo(
+                    address_checksum,
+                    vault_address_checksum
+                ).call()
+                
+                # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
+                vault_account_info = account_info[1]  # VaultAccountInfo struct
+                
+                # Check if user has a position (borrowed > 0 or shares > 0)
+                borrowed = vault_account_info[7]  # borrowed amount
+                shares = vault_account_info[5]  # shares
+                
+                if borrowed == 0 and shares == 0:
+                    logger.debug(f"No position in isolated vault {vault_address_checksum}")
+                    continue
+                
+                # Skip if no debt (supply-only position)
+                if borrowed == 0:
+                    logger.debug(f"Isolated vault {vault_address_checksum}: supply-only (no debt)")
+                    continue
+                
+                # Get liquidity info
+                liquidity_info = vault_account_info[15] if len(vault_account_info) > 15 else vault_account_info[-1]
+                query_failure = liquidity_info[0]
+                if query_failure:
+                    logger.debug(f"Query failure for isolated vault {vault_address_checksum}: {liquidity_info[1]}")
+                    continue
+                
+                # Extract values from liquidityInfo
+                # Health score = collateralValueLiquidation / liabilityValueLiquidation
+                liability_value_liquidation = liquidity_info[7]  # liabilityValueLiquidation
+                collateral_value_liquidation = liquidity_info[9]  # collateralValueLiquidation
+                
+                # Also get borrowing values for display
+                liability_value_borrowing = liquidity_info[6]  # liabilityValueBorrowing
+                collateral_value_borrowing = liquidity_info[8]  # collateralValueBorrowing
+                
+                # Convert from 18 decimals to USD
+                debt_usd = liability_value_borrowing / 1e18
+                collateral_usd = collateral_value_borrowing / 1e18
+                
+                # Calculate health factor (health score)
+                if liability_value_liquidation > 0:
+                    health_factor = collateral_value_liquidation / liability_value_liquidation
+                elif debt_usd > 0:
+                    # Fallback to borrowing values if liquidation values unavailable
+                    health_factor = collateral_usd / debt_usd
+                else:
+                    continue
+                
+                # Filter invalid positions
+                if health_factor > 1e10:
+                    continue
+                
+                # Check if we already found this vault from getAccountEnabledVaultsInfo
+                vault_address_lower = vault_address_checksum.lower()
+                if not any(v['vault_address'].lower() == vault_address_lower for v in vaults):
+                    vaults.append({
+                        'vault_address': vault_address_checksum,
+                        'health_factor': float(health_factor),
+                        'collateral_usd': collateral_usd,
+                        'debt_usd': debt_usd
+                    })
+                    logger.info(f"Found isolated Euler vault: {vault_address_checksum}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
+                
+            except Exception as e_vault:
+                logger.debug(f"Error checking isolated vault {vault_address}: {e_vault}")
+                continue
+        
     except Exception as e:
         logger.error(f"Error getting Euler user vaults for {address}: {e}")
         import traceback

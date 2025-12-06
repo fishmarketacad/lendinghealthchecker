@@ -1234,11 +1234,23 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             coll_decimals = coll_decimals if coll_decimals is not None else 18
                             
                             # Calculate Readable Amounts
-                            borrow_raw = float(pos.get('borrowAssets', 0))
+                            borrow_raw = float(pos.get('borrowAssets', 0) or 0)
                             borrow_human = borrow_raw / (10 ** loan_decimals)
                             
-                            supply_raw = float(pos.get('supplyAssets', 0))
-                            supply_human = supply_raw / (10 ** coll_decimals)
+                            # Collateral: Prioritize collateralAssets (for borrowers) over supplyAssets (for lenders)
+                            coll_raw_graph = pos.get('collateralAssets')
+                            if coll_raw_graph and float(coll_raw_graph) > 0:
+                                collateral_human = float(coll_raw_graph) / (10 ** coll_decimals)
+                            else:
+                                # Fallback to supplyAssets if collateralAssets is missing/zero (for lenders)
+                                supply_raw = float(pos.get('supplyAssets', 0) or 0)
+                                collateral_human = supply_raw / (10 ** coll_decimals)
+                            
+                            # USD Values: Prioritize collateralAssetsUsd over supplyAssetsUsd
+                            borrow_usd = float(pos.get('borrowAssetsUsd', 0) or 0)
+                            collateral_usd = float(pos.get('collateralAssetsUsd', 0) or 0)
+                            if collateral_usd == 0:
+                                collateral_usd = float(pos.get('supplyAssetsUsd', 0) or 0)
                             
                             # 4. Calculate Liquidation Price
                             # Logic: At liquidation, Debt Value = Collateral Value * LLTV

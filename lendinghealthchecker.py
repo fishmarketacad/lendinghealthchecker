@@ -1278,6 +1278,8 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                         # Extract MarketManager address from market_id (format: "marketmanager_ctoken" or just "marketmanager")
                         market_manager_address = market_id.split('_')[0] if '_' in market_id else market_id
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        # Get market name from market_info, or construct from collateral symbol
+                        market_name = market_info.get('name', 'Curvance Market') if market_info else 'Curvance Market'
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     # elif protocol_id == 'euler' and market_id:
                     #     # Euler vault URL format: /positions/{account}/{vault}?network=monad

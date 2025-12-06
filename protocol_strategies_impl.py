@@ -159,95 +159,122 @@ class CurvanceStrategy(LendingProtocolStrategy):
         return "curvance"
     
     def get_positions(self, user_address: str) -> List[PositionData]:
-        """Get Curvance positions for a user."""
+        """Get Curvance positions using getAllDynamicState + getPositionHealth directly."""
         positions = []
         
         try:
-            # Get all MarketManagers
-            market_managers = protocols.get_curvance_market_managers(self.w3)
-            logger.debug(f"Curvance: Found {len(market_managers)} MarketManagers for {user_address}")
+            address_checksum = self.w3.to_checksum_address(user_address)
             
-            # Get position details first (this is more reliable than health factor)
-            position_details = protocols.get_curvance_position_details(
-                user_address, self.contract, self.w3, None, market_managers
-            )
+            # Step 1: Get all positions from getAllDynamicState
+            result = self.contract.functions.getAllDynamicState(address_checksum).call()
+            market_data, user_data = result
+            raw_positions = user_data[1]  # positions array
             
-            logger.debug(f"Curvance: Found {len(position_details)} position details for {user_address}")
-            
-            if not position_details:
-                logger.debug(f"Curvance: No position details found for {user_address}")
+            if not raw_positions:
+                logger.debug(f"Curvance: No positions found for {user_address}")
                 return positions
             
-            # Get health factor (checks all MarketManagers)
-            # Note: health_factor might be None even if positions exist, so we'll use fallback
-            health_factor = protocols.check_curvance_health_factor(
-                user_address, self.contract, self.w3, None, market_managers
-            )
+            # Step 2: Get all MarketManagers
+            market_managers = protocols.get_curvance_market_managers(self.w3)
+            logger.debug(f"Curvance: Found {len(market_managers)} MarketManagers, {len(raw_positions)} positions")
             
-            logger.debug(f"Curvance: Health factor for {user_address}: {health_factor}")
+            # ERC20 ABI for token info
+            erc20_abi = [
+                {"inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "stateMutability": "view", "type": "function"},
+                {"inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "stateMutability": "view", "type": "function"}
+            ]
             
-            # If health_factor is None but we have position details, use a fallback health factor
-            # We'll try to get it from the position details if available
-            if health_factor is None or health_factor > 1e10:
-                logger.debug(f"Curvance: Invalid health factor ({health_factor}), will try to use position details")
-                # We'll still process positions if we have details, but use a placeholder health factor
-                # The position details might have health info we can use
+            zero_address = '0x0000000000000000000000000000000000000000'
             
-            for detail in position_details:
-                collateral_symbol = detail.get('collateral_token', '?')
-                collateral_amount = detail.get('collateral_amount', 0)
-                debt_amount = detail.get('debt_amount', 0)
+            # Step 3: For each position, find its MarketManager and get health factor
+            for position in raw_positions:
+                # position structure: (cToken, collateral, debt, health, tokenBalance)
+                cToken = position[0]
+                collateral_raw = position[1]
+                debt_raw = position[2]
                 
-                # Skip if no debt (supply-only position)
-                if debt_amount == 0:
-                    logger.debug(f"Curvance: Skipping position with no debt (supply-only)")
+                # Skip if no debt
+                if debt_raw == 0:
                     continue
                 
-                # Use health_factor from detail if available, otherwise use the global one
-                position_health = detail.get('health_factor')
-                if position_health and position_health > 0 and position_health <= 1e10:
-                    use_health_factor = float(position_health)
-                elif health_factor and health_factor > 0 and health_factor <= 1e10:
-                    use_health_factor = float(health_factor)
-                else:
-                    # If we can't get health factor, skip this position (invalid)
-                    logger.debug(f"Curvance: Skipping position - no valid health factor (detail health: {position_health}, global health: {health_factor})")
+                # Try each MarketManager to find the one that works
+                market_manager_found = None
+                health_factor = None
+                
+                for mm_address in market_managers:
+                    try:
+                        # Call getPositionHealth to check existing position
+                        health_result = self.contract.functions.getPositionHealth(
+                            self.w3.to_checksum_address(mm_address),  # mm
+                            address_checksum,  # account
+                            cToken,  # cToken
+                            zero_address,  # borrowableCToken (0 for checking existing)
+                            False,  # isDeposit
+                            0,  # collateralAssets (0 = check existing)
+                            False,  # isRepayment
+                            0,  # debtAssets (0 = check existing)
+                            0  # bufferTime
+                        ).call()
+                        
+                        position_health_raw, error_code_hit = health_result
+                        
+                        if error_code_hit:
+                            continue  # Try next MarketManager
+                        
+                        if position_health_raw > 0:
+                            health_factor = position_health_raw / 1e18
+                            market_manager_found = mm_address
+                            break  # Found working MarketManager
+                    except Exception as e:
+                        logger.debug(f"Error calling getPositionHealth: {e}")
+                        continue
+                
+                # Skip if no MarketManager worked
+                if not market_manager_found or not health_factor:
+                    logger.debug(f"Curvance: No working MarketManager found for cToken {cToken}")
                     continue
                 
-                # Curvance doesn't provide USD values, estimate from amounts
-                # (In production, would use price oracle)
-                collateral_usd = collateral_amount  # Rough estimate
-                debt_usd = debt_amount  # Rough estimate - ensure it's > 0 for validation
+                # Skip invalid health factors
+                if health_factor > 1e10:
+                    continue
                 
-                # Use market_manager as market_id (NOT cToken - cToken is collateral token address)
-                market_id = detail.get('market_manager')
-                if not market_id:
-                    logger.warning(f"Curvance: No market_manager found for position, using cToken as fallback")
-                    market_id = detail.get('cToken', 'curvance')
+                # Get token symbol and decimals
+                try:
+                    token_contract = self.w3.eth.contract(address=cToken, abi=erc20_abi)
+                    collateral_symbol = token_contract.functions.symbol().call()
+                    collateral_decimals = token_contract.functions.decimals().call()
+                    collateral_amount = collateral_raw / (10 ** collateral_decimals)
+                except Exception as e:
+                    logger.debug(f"Error getting token info for {cToken}: {e}")
+                    collateral_symbol = "?"
+                    collateral_amount = collateral_raw
                 
-                logger.debug(f"Curvance: Adding position - MarketManager: {market_id}, cToken: {detail.get('cToken')}, collateral: {collateral_amount} {collateral_symbol}, debt: {debt_amount}, health: {use_health_factor}")
+                # Debt token info (simplified - would need MarketManager to get actual borrowable token)
+                debt_symbol = "?"
+                debt_decimals = 18
+                debt_amount = debt_raw / (10 ** debt_decimals)
+                
+                logger.debug(f"Curvance: Position found - MM: {market_manager_found}, cToken: {cToken}, health: {health_factor:.3f}")
                 
                 positions.append(PositionData(
                     protocol_name="Curvance",
                     market_name=f"Curvance Market",
-                    market_id=market_id,
-                    health_factor=use_health_factor,
+                    market_id=market_manager_found,
+                    health_factor=health_factor,
                     collateral=Asset(
                         symbol=collateral_symbol,
                         amount=collateral_amount,
-                        usd_value=collateral_usd,
+                        usd_value=collateral_amount,  # Rough estimate
                         decimals=18
                     ),
                     debt=Asset(
-                        symbol=detail.get('debt_token', '?'),
+                        symbol=debt_symbol,
                         amount=debt_amount,
-                        usd_value=debt_usd,
+                        usd_value=debt_amount,  # Rough estimate
                         decimals=18
                     ),
                     app_url=self.app_url
                 ))
-            
-            logger.debug(f"Curvance: Returning {len(positions)} positions for {user_address}")
         except Exception as e:
             logger.error(f"Error fetching Curvance positions: {e}", exc_info=True)
         

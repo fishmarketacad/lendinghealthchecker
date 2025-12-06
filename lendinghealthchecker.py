@@ -42,8 +42,8 @@ PROTOCOL_CONFIG = {
         'chain': 'Monad',
         'chain_id': 143,  # Morpho Blue deployed on Monad!
         'rpc_url': os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz'),
-        # Morpho Blue Core contract on Monad - update with actual Monad address
-        'pool_address': os.environ.get('MORPHO_BLUE_ADDRESS', '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'),
+        # Morpho Blue Core contract on Monad
+        'pool_address': os.environ.get('MORPHO_BLUE_ADDRESS', '0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee'),
         'app_url': 'https://app.morpho.org/monad',
         'explorer_url': 'https://monadvision.com',
         'health_factor_method': 'position',  # Morpho uses 'position' method

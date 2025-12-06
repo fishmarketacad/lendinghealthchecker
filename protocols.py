@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # Morpho GraphQL API endpoint
 MORPHO_GRAPHQL_URL = "https://api.morpho.org/graphql"
 
+# Cache for LLTV values (immutable per market, so cache indefinitely)
+_lltv_cache = {}
+
 
 def load_abi(protocol_id: str) -> List[Dict]:
     """Load ABI from JSON file."""
@@ -1018,6 +1021,55 @@ def get_morpho_user_vaults(address: str, chain_id: int = 143) -> List[Dict]:
     return []
 
 
+def get_morpho_market_lltv(market_id: str, contract, w3) -> Optional[float]:
+    """
+    Get LLTV (Liquidation Loan-to-Value) for a Morpho market from the contract.
+    Uses idToMarketParams function.
+    
+    Args:
+        market_id: Market ID as hex string (bytes32)
+        contract: Web3 contract instance for Morpho Blue
+        w3: Web3 instance
+    
+    Returns:
+        LLTV as float (e.g., 0.86 for 86%), or None if error
+    """
+    # Check cache first
+    market_id_lower = market_id.lower()
+    if market_id_lower in _lltv_cache:
+        return _lltv_cache[market_id_lower]
+    
+    try:
+        # Convert market_id to bytes32
+        market_id_clean = market_id_lower.replace('0x', '')
+        if len(market_id_clean) != 64:
+            logger.error(f"Invalid market ID format: {market_id} (expected 64 hex chars)")
+            return None
+        
+        market_id_bytes32 = bytes.fromhex(market_id_clean)
+        
+        # Call idToMarketParams(id) -> (loanToken, collateralToken, oracle, irm, lltv)
+        market_params = contract.functions.idToMarketParams(market_id_bytes32).call()
+        
+        # LLTV is the 5th element (index 4), returned as uint256 scaled by 1e18 (WAD)
+        lltv_raw = market_params[4]
+        
+        # Convert from WAD (1e18) to decimal
+        lltv = float(lltv_raw) / 1e18
+        
+        # Cache it (immutable per market)
+        _lltv_cache[market_id_lower] = lltv
+        
+        logger.debug(f"Fetched LLTV for market {market_id_lower}: {lltv:.4f} ({lltv*100:.1f}%)")
+        return lltv
+        
+    except Exception as e:
+        logger.error(f"Error fetching LLTV for market {market_id}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None
+
+
 def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     """
     Get list of markets where user has positions using Morpho's GraphQL API.
@@ -1130,9 +1182,30 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                 'borrowAmountRaw': borrow_amount_raw,  # Human-readable borrow amount (includes accrual)
                                 'supplyAssets': pos.get('supplyAssets', '0'),
                                 'supplyAssetsUsd': pos.get('supplyAssetsUsd', 0),
-                                'lltv': lltv,  # Liquidation LTV (e.g., 0.86)
+                                'lltv': lltv,  # May be None if not available from GraphQL
                                 'liquidationPrice': liquidation_price
                             })
+                    
+                    # Fetch LLTV from contract for markets where it's missing
+                    if markets and chain_id == 143:  # Only for Monad
+                        try:
+                            # Get Web3 connection for Morpho
+                            from web3 import Web3
+                            rpc_url = os.environ.get('MONAD_NODE_URL', 'https://rpc.monad.xyz')
+                            morpho_address = os.environ.get('MORPHO_BLUE_ADDRESS', '0xD5D960E8C380B724a48AC59E2DfF1b2CB4a1eAee')
+                            w3 = Web3(Web3.HTTPProvider(rpc_url))
+                            morpho_abi = load_abi('morpho')
+                            contract = w3.eth.contract(address=morpho_address, abi=morpho_abi)
+                            
+                            for market in markets:
+                                if market.get('lltv') is None:
+                                    # Fetch LLTV from contract
+                                    lltv_from_contract = get_morpho_market_lltv(market['id'], contract, w3)
+                                    if lltv_from_contract:
+                                        market['lltv'] = lltv_from_contract
+                                        logger.debug(f"Fetched LLTV from contract for market {market['id']}: {lltv_from_contract:.4f}")
+                        except Exception as e:
+                            logger.warning(f"Could not fetch LLTV from contract: {e}")
                     
                     if markets:
                         logger.info(f"Found {len(markets)} Morpho markets for {address} on chain {chain_id} via GraphQL API")

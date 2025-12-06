@@ -224,6 +224,12 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     logger.debug(f"Curvance: Skipping position with no debt (cToken: {cToken})")
                     continue
                 
+                # Skip invalid cToken addresses (zero address or invalid)
+                zero_address = '0x0000000000000000000000000000000000000000'
+                if cToken.lower() == zero_address.lower():
+                    logger.debug(f"Curvance: Skipping position with zero cToken address")
+                    continue
+                
                 # Try each MarketManager to find the one that works
                 market_manager_found = None
                 health_factor = None

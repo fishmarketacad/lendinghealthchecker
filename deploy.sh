@@ -11,6 +11,25 @@ SERVER_USER="root"
 DEPLOY_PATH="/root/monadlendinghealthchecker"
 REMOTE_HOST="${SERVER_USER}@${SERVER_IP}"
 
+# Check if password-based auth is requested
+USE_PASSWORD=false
+if [ -n "$SERVER_PASSWORD" ]; then
+    USE_PASSWORD=true
+    # Check if sshpass is installed
+    if ! command -v sshpass &> /dev/null; then
+        echo "❌ Error: sshpass not found. Install it with:"
+        echo "   macOS: brew install hudochenkov/sshpass/sshpass"
+        echo "   Linux: sudo apt-get install sshpass"
+        exit 1
+    fi
+    export SSHPASS="$SERVER_PASSWORD"
+    SSH_CMD="sshpass -e ssh"
+    SCP_CMD="sshpass -e scp"
+else
+    SSH_CMD="ssh"
+    SCP_CMD="scp"
+fi
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -108,7 +127,7 @@ fi
 echo -e "${GREEN}📤 Uploading files to server...${NC}"
 
 # Upload to server
-scp "${TEMP_DIR}/deploy.tar.gz" "${REMOTE_HOST}:/tmp/"
+$SCP_CMD "${TEMP_DIR}/deploy.tar.gz" "${REMOTE_HOST}:/tmp/"
 
 # Cleanup local temp files
 rm -rf "${TEMP_DIR}"
@@ -116,7 +135,7 @@ rm -rf "${TEMP_DIR}"
 echo -e "${GREEN}🔧 Setting up on server...${NC}"
 
 # Execute remote setup commands
-ssh "${REMOTE_HOST}" << 'ENDSSH'
+$SSH_CMD "${REMOTE_HOST}" << 'ENDSSH'
 set -e
 
 DEPLOY_PATH="/root/monadlendinghealthchecker"

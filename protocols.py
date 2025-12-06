@@ -633,19 +633,23 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                         address_checksum,
                         vault_address_checksum
                     ).call()
-                    logger.debug(f"getAccountInfo succeeded for vault {vault_address_checksum}")
+                    logger.info(f"getAccountInfo succeeded for vault {vault_address_checksum}, result type: {type(account_info)}")
                 except Exception as e_call:
-                    logger.debug(f"getAccountInfo failed for vault {vault_address_checksum}: {e_call}")
+                    logger.error(f"getAccountInfo FAILED for vault {vault_address_checksum}: {e_call}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     continue
                 
                 # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
+                logger.debug(f"account_info length: {len(account_info) if hasattr(account_info, '__len__') else 'N/A'}")
                 vault_account_info = account_info[1]  # VaultAccountInfo struct
+                logger.debug(f"vault_account_info type: {type(vault_account_info)}, length: {len(vault_account_info) if hasattr(vault_account_info, '__len__') else 'N/A'}")
                 
                 # Check if user has a position (borrowed > 0 or shares > 0)
                 borrowed = vault_account_info[7]  # borrowed amount
                 shares = vault_account_info[5]  # shares
                 
-                logger.debug(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}")
+                logger.info(f"Vault {vault_address_checksum}: borrowed={borrowed}, shares={shares}")
                 
                 if borrowed == 0 and shares == 0:
                     logger.debug(f"No position in isolated vault {vault_address_checksum} (borrowed=0, shares=0)")
@@ -701,7 +705,9 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                     logger.info(f"Found isolated Euler vault: {vault_address_checksum}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
                 
             except Exception as e_vault:
-                logger.debug(f"Error checking isolated vault {vault_address}: {e_vault}")
+                logger.error(f"Error checking isolated vault {vault_address}: {e_vault}")
+                import traceback
+                logger.error(traceback.format_exc())
                 continue
         
     except Exception as e:

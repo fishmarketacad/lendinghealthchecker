@@ -1032,7 +1032,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
     markets = []
     
     try:
-        # Query with LLTV and liquidation price fields
+        # Simplified query - only fetch fields that are reliably available
+        # Note: Some fields like lltv, liquidationPrice, decimals, price may not be available for Monad
         query = """
         query GetUserPositions($address: String!, $chainId: Int!) {
             userByAddress(
@@ -1045,26 +1046,16 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                         uniqueKey
                         loanAsset {
                             symbol
-                            decimals
-                            price {
-                                value
-                            }
                         }
                         collateralAsset {
                             symbol
-                            decimals
-                            price {
-                                value
-                            }
                         }
-                        lltv
                     }
                     healthFactor
                     borrowAssets
                     borrowAssetsUsd
                     supplyAssets
                     supplyAssetsUsd
-                    liquidationPrice
                 }
             }
         }
@@ -1085,14 +1076,17 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
         if response.status_code == 200:
             data = response.json()
             if 'errors' in data:
-                logger.error(f"Morpho GraphQL errors: {data['errors']}")
+                logger.error(f"Morpho GraphQL errors for {address} on chain {chain_id}: {data['errors']}")
                 for error in data['errors']:
                     logger.error(f"  GraphQL Error: {error.get('message', error)}")
+                # Don't return empty list on GraphQL errors - log and continue
+                logger.warning(f"GraphQL query had errors, but continuing to process response")
             
             if 'data' in data and data['data']:
                 user_data = data['data'].get('userByAddress')
                 if user_data:
                     positions = user_data.get('marketPositions', [])
+                    logger.debug(f"Morpho GraphQL returned {len(positions)} positions for {address} on chain {chain_id}")
                     
                     for pos in positions:
                         market = pos.get('market', {})
@@ -1106,14 +1100,15 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                             
                             # Extract market details
                             market_data = pos.get('market', {})
-                            lltv = market_data.get('lltv')  # Liquidation LTV (e.g., 0.86 for 86%)
+                            lltv = market_data.get('lltv')  # May not be available for Monad
                             
-                            # Get liquidation price if available
+                            # Get liquidation price if available (may not be available for Monad)
                             liquidation_price = pos.get('liquidationPrice')
                             
                             # Get raw borrow amount (for accurate debt display with accrual)
                             borrow_assets_raw = pos.get('borrowAssets', '0')
                             loan_asset_data = market_data.get('loanAsset', {})
+                            # Try to get decimals, but default to 18 if not available
                             loan_decimals = loan_asset_data.get('decimals', 18)
                             
                             # Calculate raw borrow amount in human-readable format
@@ -1147,9 +1142,9 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                 else:
                     logger.debug(f"No user data found for {address} on chain {chain_id} in Morpho API")
             else:
-                logger.debug(f"No data in response for {address} on chain {chain_id}")
+                logger.warning(f"No data in response for {address} on chain {chain_id}. Response: {data}")
         else:
-            logger.debug(f"Morpho GraphQL API returned status {response.status_code}: {response.text}")
+            logger.error(f"Morpho GraphQL API returned status {response.status_code} for {address} on chain {chain_id}: {response.text[:500]}")
             
     except Exception as e:
         logger.error(f"Morpho GraphQL API error: {e}")

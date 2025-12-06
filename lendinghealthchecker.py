@@ -1003,14 +1003,21 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                         # So: Collateral Value = (Health Factor × Total Borrowed Amount) / LLTV
                         collateral_usd = market_info.get('supplyAssetsUsd', 0)
                         debt_usd = market_info.get('borrowAssetsUsd', 0)
-                        lltv = market_info.get('lltv')  # Liquidation LTV (e.g., 0.86 for 86%)
+                        lltv = market_info.get('lltv')  # Liquidation LTV (e.g., 0.86 for 86%) - fetched from contract
                         
-                        # Use raw borrow amount if available (more accurate for accrual)
-                        borrow_amount_raw = market_info.get('borrowAmountRaw')
-                        if borrow_amount_raw:
-                            # Convert raw amount to USD using loan asset price if needed
-                            # For now, use borrowAssetsUsd but we'll display raw amount separately
-                            pass
+                        # If LLTV is still not available, try fetching from contract
+                        if lltv is None:
+                            market_id = market_info.get('id')
+                            if market_id:
+                                try:
+                                    protocol_info = PROTOCOL_CONFIG['morpho']
+                                    conn = protocol_connections['morpho']
+                                    lltv = protocols.get_morpho_market_lltv(market_id, conn['contract'], conn['w3'])
+                                    if lltv:
+                                        market_info['lltv'] = lltv  # Cache it in market_info
+                                        logger.debug(f"Fetched LLTV from contract for market {market_id}: {lltv:.4f}")
+                                except Exception as e:
+                                    logger.debug(f"Could not fetch LLTV from contract: {e}")
                         
                         # Calculate collateral from health factor and LLTV if supplyAssetsUsd is 0
                         if collateral_usd == 0 and debt_usd > 0 and health_factor and lltv:

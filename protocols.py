@@ -642,10 +642,26 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 
                 # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
                 logger.info(f"account_info length: {len(account_info) if hasattr(account_info, '__len__') else 'N/A'}")
-                logger.debug(f"account_info[0] (evcAccountInfo): {account_info[0] if len(account_info) > 0 else 'N/A'}")
+                
+                # Log EVC account info
+                evc_account_info = account_info[0] if len(account_info) > 0 else None
+                if evc_account_info:
+                    logger.info(f"EVC account info: account={evc_account_info[2] if len(evc_account_info) > 2 else 'N/A'}, owner={evc_account_info[4] if len(evc_account_info) > 4 else 'N/A'}")
+                
                 vault_account_info = account_info[1]  # VaultAccountInfo struct
                 logger.info(f"vault_account_info type: {type(vault_account_info)}, length: {len(vault_account_info) if hasattr(vault_account_info, '__len__') else 'N/A'}")
-                logger.debug(f"Full vault_account_info: {vault_account_info}")
+                logger.info(f"Full vault_account_info tuple: {vault_account_info}")
+                
+                # Log each field for debugging
+                if hasattr(vault_account_info, '__len__'):
+                    logger.info(f"vault_account_info[0] (timestamp): {vault_account_info[0] if len(vault_account_info) > 0 else 'N/A'}")
+                    logger.info(f"vault_account_info[1] (account): {vault_account_info[1] if len(vault_account_info) > 1 else 'N/A'}")
+                    logger.info(f"vault_account_info[2] (vault): {vault_account_info[2] if len(vault_account_info) > 2 else 'N/A'}")
+                    logger.info(f"vault_account_info[3] (asset): {vault_account_info[3] if len(vault_account_info) > 3 else 'N/A'}")
+                    logger.info(f"vault_account_info[4] (assetsAccount): {vault_account_info[4] if len(vault_account_info) > 4 else 'N/A'}")
+                    logger.info(f"vault_account_info[5] (shares): {vault_account_info[5] if len(vault_account_info) > 5 else 'N/A'}")
+                    logger.info(f"vault_account_info[6] (assets): {vault_account_info[6] if len(vault_account_info) > 6 else 'N/A'}")
+                    logger.info(f"vault_account_info[7] (borrowed): {vault_account_info[7] if len(vault_account_info) > 7 else 'N/A'}")
                 
                 # Check if user has a position (borrowed > 0 or shares > 0)
                 # VaultAccountInfo structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)

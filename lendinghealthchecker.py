@@ -504,8 +504,9 @@ async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     save_user_data(user_data)
     
     # Automatically check and show positions for this address
+    # If protocol was specified, only check that protocol
     checking_msg = await update.message.reply_text("🔍 Checking positions...")
-    check_message = await build_check_message(chat_id, [address])
+    check_message = await build_check_message(chat_id, [address], filter_protocol=protocol_id)
     
     # Delete the "checking..." message
     try:
@@ -518,7 +519,8 @@ async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if check_message:
         combined_message += "\n\n" + check_message
     else:
-        combined_message += f"\n\nNo active positions found for {address}."
+        protocol_text = f" for {PROTOCOL_CONFIG[protocol_id]['name']} protocol" if protocol_id else ""
+        combined_message += f"\n\nNo active positions found for {address}{protocol_text}."
     
     await update.message.reply_text(combined_message, parse_mode='Markdown', disable_web_page_preview=True)
 
@@ -635,9 +637,14 @@ async def remove_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(f"✅ Removed {address} from monitoring.")
 
 # Function to auto-discover all positions for an address across all protocols
-async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
+async def discover_all_positions(address: str, chat_id: str, filter_protocol: Optional[str] = None) -> List[Dict]:
     """
     Auto-discover all active positions for an address across all protocols.
+    
+    Args:
+        address: Wallet address to check
+        chat_id: Chat ID for user data lookup
+        filter_protocol: Optional protocol ID to filter results (e.g., 'euler', 'morpho')
     
     Returns:
         List of position dicts with: protocol_id, market_id, health_factor, threshold, etc.
@@ -646,6 +653,7 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
     address_data = user_data[chat_id].get('addresses', {}).get(address, {})
     
     # Check Neverland
+    if filter_protocol is None or filter_protocol == 'neverland':
     try:
         cache_key = f"neverland_{address}"
         health_factor = get_cached_or_fetch(
@@ -689,7 +697,8 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
         logger.error(f"Error checking Neverland for {address}: {e}")
     
     # Check Morpho - auto-discover all markets
-    try:
+    if filter_protocol is None or filter_protocol == 'morpho':
+        try:
         protocol_info = PROTOCOL_CONFIG['morpho']
         cache_key = f"morpho_markets_{address}"
         markets_data = get_cached_or_fetch(
@@ -714,11 +723,12 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
                         'threshold': threshold,
                         'market_info': market
                     })
-    except Exception as e:
-        logger.error(f"Error checking Morpho for {address}: {e}")
+        except Exception as e:
+            logger.error(f"Error checking Morpho for {address}: {e}")
     
     # Check Curvance - auto-discover all MarketManagers
-    try:
+    if filter_protocol is None or filter_protocol == 'curvance':
+        try:
         protocol_info = PROTOCOL_CONFIG['curvance']
         conn = protocol_connections['curvance']
         
@@ -774,11 +784,12 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
             except Exception as e:
                 logger.debug(f"Error checking Curvance MarketManager {market_manager} for {address}: {e}")
                 continue
-    except Exception as e:
-        logger.error(f"Error checking Curvance for {address}: {e}")
+        except Exception as e:
+            logger.error(f"Error checking Curvance for {address}: {e}")
     
     # Check Euler - auto-discover all vaults (similar to Morpho markets)
-    try:
+    if filter_protocol is None or filter_protocol == 'euler':
+        try:
         protocol_info = PROTOCOL_CONFIG['euler']
         conn = protocol_connections['euler']
         
@@ -818,12 +829,12 @@ async def discover_all_positions(address: str, chat_id: str) -> List[Dict]:
                     logger.info(f"Added Euler position: {vault_address_lower}, hf={hf:.3f}")
                 else:
                     logger.debug(f"Filtered Euler vault {vault_address}: hf={hf}, debt=${debt_usd} (invalid position)")
-        else:
-            logger.info(f"No Euler vaults found for {address}")
-    except Exception as e:
-        logger.error(f"Error checking Euler for {address}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+            else:
+                logger.info(f"No Euler vaults found for {address}")
+        except Exception as e:
+            logger.error(f"Error checking Euler for {address}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     return positions
 

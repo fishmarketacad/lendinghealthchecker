@@ -1388,24 +1388,43 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
                                         collateral_token_address = market_params[1]
                                         
                                         # Extract position data
-                                        supply_shares = user_position[0]
-                                        borrow_shares = user_position[1]
-                                        collateral_raw = user_position[2]  # This is collateral amount in raw units
+                                        supply_shares = user_position[0]  # Shares of LOAN token supplied (for lenders)
+                                        borrow_shares = user_position[1]  # Shares of LOAN token borrowed
+                                        # Index 2 is collateral amount (assets), NOT shares - this is what borrowers post
+                                        collateral_assets_raw = user_position[2]
                                         
-                                        # Convert supply shares to supply assets (collateral)
-                                        total_supply_assets = market_data[0]
-                                        total_supply_shares = market_data[1]
-                                        if total_supply_shares > 0 and supply_shares > 0:
-                                            supply_assets_raw = (supply_shares * total_supply_assets) // total_supply_shares
-                                            
+                                        # Handle Collateral (Borrower's collateral)
+                                        # In Morpho Blue, borrowers post collateral which is stored directly as assets in user_position[2]
+                                        # For borrowers, supplyShares is 0, so we must use the collateral field directly
+                                        if collateral_assets_raw > 0:
                                             # Get collateral token decimals dynamically
                                             collateral_decimals = get_token_decimals(collateral_token_address, w3)
                                             
-                                            # Convert to human-readable format
-                                            collateral_amount = float(supply_assets_raw) / (10 ** collateral_decimals)
-                                            market['collateralAmount'] = collateral_amount
-                                            market['collateralAmountRaw'] = supply_assets_raw
-                                            logger.debug(f"Fetched collateral amount from contract: {collateral_amount:.4f} (decimals: {collateral_decimals})")
+                                            # Convert to human-readable format (collateral is already in assets, not shares)
+                                            collateral_amount = float(collateral_assets_raw) / (10 ** collateral_decimals)
+                                            
+                                            # Update market object with collateral amount
+                                            market['supplyAmountHuman'] = collateral_amount
+                                            
+                                            logger.debug(f"Fetched collateral from contract: {collateral_amount:.4f} {market.get('collateralAsset')} (raw: {collateral_assets_raw}, decimals: {collateral_decimals})")
+                                        
+                                        # Handle Lenders: If user is lending (supplyShares > 0), convert shares to assets
+                                        # Note: This is for lenders who supply the loan token, not borrowers
+                                        if supply_shares > 0:
+                                            total_supply_assets = market_data[0]
+                                            total_supply_shares = market_data[1]
+                                            if total_supply_shares > 0:
+                                                supply_assets_raw = (supply_shares * total_supply_assets) // total_supply_shares
+                                                
+                                                # Get loan token decimals (lenders supply the loan token)
+                                                loan_decimals = get_token_decimals(loan_token_address, w3)
+                                                
+                                                # Convert to human-readable format
+                                                supply_amount = float(supply_assets_raw) / (10 ** loan_decimals)
+                                                
+                                                # For lenders, this is their supply amount (loan token)
+                                                # But we're tracking collateral for borrowers, so this might not be used
+                                                logger.debug(f"User is lending: {supply_amount:.4f} {market.get('loanAsset')} (supplyShares: {supply_shares})")
                                         
                                         # Extract borrow shares and convert to assets
                                         if borrow_shares > 0:

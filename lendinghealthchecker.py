@@ -1018,12 +1018,56 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                     liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
                     threshold_str = f"{threshold:.3f}".rstrip('0').rstrip('.')
                     
+                    # Extract collateral and debt values for Morpho
+                    tvl_debt_str = ""
+                    if protocol_id == 'morpho' and market_info:
+                        collateral_usd = market_info.get('supplyAssetsUsd', 0)
+                        debt_usd = market_info.get('borrowAssetsUsd', 0)
+                        collateral_symbol = market_info.get('collateralAsset', '?')
+                        loan_symbol = market_info.get('loanAsset', '?')
+                        collateral_human = market_info.get('supplyAmountHuman', 0)
+                        borrow_human = market_info.get('borrowAmountHuman', 0)
+                        
+                        # Format Amounts (e.g., 1.02 or 50k)
+                        def format_amount(val):
+                            if val >= 1_000_000:
+                                return f"{val/1_000_000:.2f}M"
+                            if val >= 1_000:
+                                return f"{val/1_000:.1f}K"
+                            if val >= 1:
+                                return f"{val:.2f}"
+                            return f"{val:.4f}"
+                        
+                        def format_usd(val):
+                            if val >= 1_000_000:
+                                return f"${val/1_000_000:.2f}M"
+                            if val >= 1_000:
+                                return f"${val/1_000:.2f}K"
+                            return f"${val:.2f}"
+                        
+                        col_str = f"{format_amount(collateral_human)} {collateral_symbol} ({format_usd(collateral_usd)})"
+                        deb_str = f"{format_amount(borrow_human)} {loan_symbol} ({format_usd(debt_usd)})"
+                        
+                        # Liquidation Info - check both camelCase and snake_case keys
+                        liq_price = market_info.get('liquidationPrice') or market_info.get('liquidation_price')
+                        drop_pct = market_info.get('liquidationDropPct') or market_info.get('liquidation_drop_pct')
+                        
+                        liq_str = ""
+                        if liq_price and float(liq_price) > 0:
+                            liq_price = float(liq_price)
+                            drop_pct = float(drop_pct) if drop_pct else 0
+                            # Smart formatting for price (handle small vs large prices)
+                            price_fmt = f"${liq_price:,.2f}" if liq_price > 1 else f"${liq_price:.4f}"
+                            liq_str = f"\nLiquidation price: {price_fmt} ({drop_pct:.1f}% drop to liquidation)"
+                        
+                        tvl_debt_str = f"\nCollateral: {col_str} | Debt: {deb_str}{liq_str}"
+                    
                     # Format message - reordered: Current Health first, then threshold
                     if protocol_id == 'morpho' and market_info:
                         market_name = market_info.get('name', 'Unknown').upper()
                         market_id_for_url = market_info.get('id') or market_id or 'unknown'
                         market_url = f"https://app.morpho.org/monad/market/{market_id_for_url}/{market_info.get('name', 'unknown')}?subTab=yourPosition"
-                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'curvance' and market_id:
                         # market_id is now the MarketManager address (grouped by MarketManager)
                         market_manager_address = market_id

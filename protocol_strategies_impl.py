@@ -4,7 +4,7 @@ Concrete implementations of protocol strategies.
 Each protocol has its own strategy class that wraps the existing protocol functions
 and converts them to the standardized PositionData format.
 """
-from typing import List
+from typing import List, Optional
 from web3 import Web3
 import protocols
 import protocol_strategy
@@ -147,16 +147,167 @@ class MorphoStrategy(LendingProtocolStrategy):
 class CurvanceStrategy(LendingProtocolStrategy):
     """Strategy for Curvance protocol."""
     
+    # Known cToken addresses -> collateral symbols
+    CTOKEN_TO_COLLATERAL_SYMBOL = {
+        '0xf7a6ab4af86966c141d3c5633df658e5cdb0a735': 'loAZND',  # cloAZND
+        '0x852ff1ec21d63b405ec431e04ae3ac760e29263d': 'earnAUSD',  # cearnAUSD
+        '0xe01d426b589c7834a5f6b20d7e992a705d3c22ed': 'WMON',  # cWMON
+        '0xdadbb2d8f9802dc458f5d7f133d053087ba8983d': 'AUSD',  # cAUSD (loAZND market)
+        '0x2b4e0232f46e6db4af35474c140b968eefcb09ec': 'AUSD',  # cAUSD (muBOND market)
+        '0x6e182eb501800c555bd5e662e6d350d627f504d8': 'AUSD',  # cAUSD (WMON/earnAUSD market)
+    }
+    
+    # MarketManager -> collateral symbol mappings (fallback)
+    MARKET_MANAGER_TO_COLLATERAL_SYMBOL = {
+        '0x5ea0a1cf3501c954b64902c5e92100b8a2cab1ac': 'AprMON',
+        '0xe1c24b2e93230fbe33d32ba38eca3218284143e2': 'shMON',
+        '0xe5970cdb1916b2ccf6185c86c174eee2d330d05b': 'sMON',
+        '0x830d40cdfdc494bc1a2729a7381bfce44326c944': 'muBOND',
+        '0x7c822b093a116654f824ec2a35cd23a3749e4f90': 'loAZND',
+        '0x83840d837e7a3e00bbb0b8501e60e989a8987c37': 'ezETH',
+        '0xbbe7a3c45adbb16f6490767b663428c34aa341eb': 'sAUSD',
+        '0xd6365555f6a697c7c295ba741100aa644ce28545': 'earnAUSD',  # Also WMON/AUSD market
+        '0xa6a2a92f126b79ee0804845ee6b52899b4491093': 'WMON',
+        '0x01c4a0d396efe982b1b103be9910321d34e1aea9': 'WBTC',
+        '0xb3e9e0134354cc91b7fb9f9d6c3ab0de7854bb49': 'WETH',
+    }
+    
+    # MarketManager -> borrowableCToken mappings
+    MARKET_MANAGER_TO_BORROWABLE_CTOKEN = {
+        '0x5ea0a1cf3501c954b64902c5e92100b8a2cab1ac': '0xf32b334042dc1eb9732454cc9bc1a06205d184f2',  # AprMON/WMON
+        '0xe1c24b2e93230fbe33d32ba38eca3218284143e2': '0x0fced51b526bfa5619f83d97b54a57e3327eb183',  # shMON/wMON
+        '0xe5970cdb1916b2ccf6185c86c174eee2d330d05b': '0xebe45a6cea7760a71d8e0fa5a0ae80a75320d708',  # sMON/wMON
+        '0x830d40cdfdc494bc1a2729a7381bfce44326c944': '0x2b4e0232f46e6db4af35474c140b968eefcb09ec',  # muBOND/AUSD
+        '0x7c822b093a116654f824ec2a35cd23a3749e4f90': '0xdadbb2d8f9802dc458f5d7f133d053087ba8983d',  # loAZND/AUSD
+        '0x83840d837e7a3e00bbb0b8501e60e989a8987c37': '0xa206d51c02c0202a2eed8e6a757b49ab13930227',  # ezETH/WETH
+        '0xbbe7a3c45adbb16f6490767b663428c34aa341eb': '0xfd493ce1a0ae986e09d17004b7e748817a47d73c',  # sAUSD/AUSD
+        '0xd6365555f6a697c7c295ba741100aa644ce28545': '0x6e182eb501800c555bd5e662e6d350d627f504d8',  # WMON/AUSD, earnAUSD/AUSD
+        '0xa6a2a92f126b79ee0804845ee6b52899b4491093': '0x8ee9fc28b8da872c38a496e9ddb9700bb7261774',  # WMON/USDC
+        '0x01c4a0d396efe982b1b103be9910321d34e1aea9': '0x7c9d4f1695c6282da5e5509aa51fc9fb417c6f1d',  # WBTC/USDC
+        '0xb3e9e0134354cc91b7fb9f9d6c3ab0de7854bb49': '0x21adbb60a5fb909e7f1fb48aacc4569615cd97b5',  # WETH/USDC
+    }
+    
     def __init__(self, contract, w3: Web3, app_url: str):
         self.contract = contract
         self.w3 = w3
         self.app_url = app_url
+        # Caches for RPC calls
+        self._ctoken_asset_cache = {}
+        self._symbol_cache = {}
     
     def get_name(self) -> str:
         return "Curvance"
     
     def get_protocol_id(self) -> str:
         return "curvance"
+    
+    def _normalize_ctoken_symbol(self, symbol: str) -> str:
+        """Strip 'c' prefix from cToken symbols if it's a valid cToken pattern."""
+        if symbol == '?' or not symbol:
+            return symbol
+        if symbol.startswith('c') and len(symbol) > 1:
+            test_without_c = symbol[1:]
+            if test_without_c[0].isupper() or test_without_c.lower() in ['ausd', 'wmon', 'weth', 'usdc', 'wbtc', 'earnausd', 'loaznd']:
+                return test_without_c
+        return symbol
+    
+    def _get_ctoken_asset(self, ctoken_address: str) -> Optional[str]:
+        """Get underlying asset address from cToken by calling asset()."""
+        ctoken_lower = ctoken_address.lower()
+        
+        if ctoken_lower in self._ctoken_asset_cache:
+            return self._ctoken_asset_cache[ctoken_lower]
+        
+        try:
+            ctoken_abi = [{
+                'inputs': [],
+                'name': 'asset',
+                'outputs': [{'internalType': 'address', 'name': '', 'type': 'address'}],
+                'stateMutability': 'view',
+                'type': 'function'
+            }]
+            
+            ctoken_contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(ctoken_address),
+                abi=ctoken_abi
+            )
+            
+            asset_address = ctoken_contract.functions.asset().call()
+            if asset_address and asset_address != '0x0000000000000000000000000000000000000000':
+                asset_lower = asset_address.lower()
+                self._ctoken_asset_cache[ctoken_lower] = asset_lower
+                return asset_lower
+        except Exception:
+            pass
+        
+        self._ctoken_asset_cache[ctoken_lower] = None
+        return None
+    
+    def _get_token_symbol(self, token_address: str) -> str:
+        """Get token symbol with caching."""
+        token_lower = token_address.lower()
+        
+        if token_lower in self._symbol_cache:
+            return self._symbol_cache[token_lower]
+        
+        try:
+            erc20_abi = [{
+                "inputs": [],
+                "name": "symbol",
+                "outputs": [{"name": "", "type": "string"}],
+                "stateMutability": "view",
+                "type": "function"
+            }]
+            token_contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(token_address),
+                abi=erc20_abi
+            )
+            symbol = token_contract.functions.symbol().call()
+            self._symbol_cache[token_lower] = symbol
+            return symbol
+        except Exception:
+            self._symbol_cache[token_lower] = '?'
+            return '?'
+    
+    def _get_collateral_symbol(self, cToken: str, market_manager: Optional[str] = None) -> str:
+        """Get collateral symbol from cToken, with fallbacks."""
+        if not cToken or cToken == '0x0000000000000000000000000000000000000000':
+            if market_manager:
+                return self.MARKET_MANAGER_TO_COLLATERAL_SYMBOL.get(market_manager.lower(), '?')
+            return '?'
+        
+        ctoken_lower = cToken.lower()
+        
+        # Check known cToken mapping first
+        if ctoken_lower in self.CTOKEN_TO_COLLATERAL_SYMBOL:
+            return self.CTOKEN_TO_COLLATERAL_SYMBOL[ctoken_lower]
+        
+        # Try getting symbol from cToken contract
+        symbol = self._normalize_ctoken_symbol(self._get_token_symbol(cToken))
+        if symbol != '?':
+            return symbol
+        
+        # Try underlying asset
+        asset = self._get_ctoken_asset(cToken)
+        if asset:
+            symbol = self._normalize_ctoken_symbol(self._get_token_symbol(asset))
+            if symbol != '?':
+                return symbol
+        
+        # Fallback to MarketManager mapping
+        if market_manager:
+            return self.MARKET_MANAGER_TO_COLLATERAL_SYMBOL.get(market_manager.lower(), '?')
+        
+        return '?'
+    
+    def _get_debt_symbol(self, market_manager: str) -> str:
+        """Get debt symbol from borrowableCToken for a MarketManager."""
+        borrowable_ctoken = self.MARKET_MANAGER_TO_BORROWABLE_CTOKEN.get(market_manager.lower())
+        if borrowable_ctoken:
+            asset = self._get_ctoken_asset(borrowable_ctoken)
+            if asset:
+                return self._get_token_symbol(asset)
+        return '?'
     
     def get_positions(self, user_address: str) -> List[PositionData]:
         """
@@ -320,33 +471,31 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     logger.warning(f"Curvance: No MarketManager found for cToken {cToken} despite having health factor")
                     continue
                 
-                # Get token symbol and decimals
+                # Extract cToken address (may be packed)
+                cToken_clean = cToken
+                if isinstance(cToken, int):
+                    hex_str = hex(cToken)[2:].zfill(64)
+                    address_hex = hex_str[-40:]
+                    cToken_clean = '0x' + address_hex
+                elif not isinstance(cToken, str):
+                    cToken_clean = str(cToken)
+                
+                # Get collateral symbol using improved extraction logic
+                collateral_symbol = self._get_collateral_symbol(cToken_clean, market_manager_found)
+                
+                # Get debt symbol
+                debt_symbol = self._get_debt_symbol(market_manager_found) if market_manager_found else "?"
+                
+                # Get token decimals for amount calculation
                 try:
-                    token_contract = self.w3.eth.contract(address=cToken, abi=erc20_abi)
-                    collateral_symbol = token_contract.functions.symbol().call()
+                    token_contract = self.w3.eth.contract(address=cToken_clean, abi=erc20_abi)
                     collateral_decimals = token_contract.functions.decimals().call()
                     collateral_amount = collateral_raw / (10 ** collateral_decimals)
-                except Exception as e:
-                    logger.debug(f"Error getting token info for {cToken}: {e}")
-                    # Try to extract address from cToken if it's packed
-                    if isinstance(cToken, int):
-                        hex_str = hex(cToken)[2:].zfill(64)
-                        address_hex = hex_str[-40:]
-                        cToken_clean = '0x' + address_hex
-                        try:
-                            token_contract = self.w3.eth.contract(address=cToken_clean, abi=erc20_abi)
-                            collateral_symbol = token_contract.functions.symbol().call()
-                            collateral_decimals = token_contract.functions.decimals().call()
-                            collateral_amount = collateral_raw / (10 ** collateral_decimals)
-                        except:
-                            collateral_symbol = "?"
-                            collateral_amount = collateral_raw
-                    else:
-                        collateral_symbol = "?"
-                        collateral_amount = collateral_raw
+                except Exception:
+                    # Fallback to 18 decimals
+                    collateral_decimals = 18
+                    collateral_amount = collateral_raw / (10 ** collateral_decimals)
                 
-                # Debt token info (simplified - would need MarketManager to get actual borrowable token)
-                debt_symbol = "?"
                 debt_decimals = 18
                 debt_amount = debt_raw / (10 ** debt_decimals)
                 
@@ -375,20 +524,31 @@ class CurvanceStrategy(LendingProtocolStrategy):
             
             # Convert grouped positions to PositionData list (one per MarketManager)
             for mm_lower, mm_data in mm_positions.items():
-                # Create market name from collateral tokens
-                collateral_symbols = [ct['symbol'] for ct in mm_data['collateral_tokens']]
+                # Create market name from collateral tokens and debt symbol
+                collateral_symbols = [ct['symbol'] for ct in mm_data['collateral_tokens'] if ct['symbol'] != '?']
                 unique_symbols = list(dict.fromkeys(collateral_symbols))  # Preserve order, remove duplicates
-                if len(unique_symbols) == 1:
-                    market_name = f"Curvance Market ({unique_symbols[0]})"
-                elif len(unique_symbols) <= 3:
-                    market_name = f"Curvance Market ({', '.join(unique_symbols)})"
+                debt_symbol = mm_data['debt_symbol']
+                
+                # Format: "debt | collateral1, collateral2" or just "collateral" if no debt symbol
+                if debt_symbol and debt_symbol != '?':
+                    if len(unique_symbols) == 1:
+                        market_name = f"{debt_symbol} | {unique_symbols[0]}"
+                    elif len(unique_symbols) <= 3:
+                        market_name = f"{debt_symbol} | {', '.join(unique_symbols)}"
+                    else:
+                        market_name = f"{debt_symbol} | {', '.join(unique_symbols[:3])}..."
                 else:
-                    market_name = f"Curvance Market ({', '.join(unique_symbols[:3])}...)"
+                    if len(unique_symbols) == 1:
+                        market_name = unique_symbols[0]
+                    elif len(unique_symbols) <= 3:
+                        market_name = ', '.join(unique_symbols)
+                    else:
+                        market_name = ', '.join(unique_symbols[:3]) + '...'
                 
                 # Use MarketManager address as market_id (since aggregate health is per MarketManager)
                 market_id = mm_data['market_manager']
                 
-                # Use first collateral symbol for display (or "Mixed" if multiple)
+                # Use first collateral symbol for display (or "?" if none)
                 display_collateral_symbol = unique_symbols[0] if unique_symbols else "?"
                 
                 positions.append(PositionData(

@@ -159,7 +159,16 @@ class CurvanceStrategy(LendingProtocolStrategy):
         return "curvance"
     
     def get_positions(self, user_address: str) -> List[PositionData]:
-        """Get Curvance positions using getAllDynamicState + getPositionHealth directly."""
+        """
+        Get Curvance positions using getAllDynamicState + getPositionHealth.
+        
+        IMPORTANT: getPositionHealth() returns AGGREGATE health for the account within a MarketManager,
+        not per-position health. If you have multiple positions (e.g., WMON collateral + earnAUSD collateral)
+        in the same MarketManager, they will all show the same aggregate health factor.
+        
+        The aggregate combines ALL collateral and ALL debt across ALL positions in that MarketManager
+        to calculate one overall health factor for your entire account in that market.
+        """
         positions = []
         
         try:
@@ -176,53 +185,14 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     return positions
                 
                 market_data, user_data = result
-                logger.info(f"Curvance: ========== getAllDynamicState RESULT ==========")
-                logger.info(f"Curvance: market_data type: {type(market_data)}, length: {len(market_data) if market_data else 0}")
-                logger.info(f"Curvance: user_data type: {type(user_data)}, length: {len(user_data) if user_data else 0}")
-                
-                # Log market_data structure
-                if market_data:
-                    logger.info(f"Curvance: market_data contains {len(market_data)} markets:")
-                    for idx, market in enumerate(market_data[:5]):  # Log first 5 markets
-                        logger.info(f"Curvance:   Market {idx+1}: {market}")
-                    if len(market_data) > 5:
-                        logger.info(f"Curvance:   ... and {len(market_data) - 5} more markets")
+                logger.debug(f"Curvance: market_data type: {type(market_data)}, user_data type: {type(user_data)}")
                 
                 if not user_data or len(user_data) < 2:
                     logger.warning(f"Curvance: Invalid user_data structure: {user_data}")
                     return positions
                 
-                logger.info(f"Curvance: user_data[0] (veCVE): {type(user_data[0])}, length: {len(user_data[0]) if hasattr(user_data[0], '__len__') else 'N/A'}")
-                logger.info(f"Curvance: user_data[1] (positions): {type(user_data[1])}, length: {len(user_data[1]) if user_data[1] else 0}")
-                
                 raw_positions = user_data[1]  # positions array
                 logger.info(f"Curvance: Found {len(raw_positions) if raw_positions else 0} raw positions for {user_address}")
-                
-                # Log each position structure
-                logger.info(f"Curvance: ========== POSITIONS FROM getAllDynamicState ==========")
-                for idx, position in enumerate(raw_positions[:10]):  # Log first 10 positions
-                    logger.info(f"Curvance: Position {idx+1}/{len(raw_positions)}: {position}")
-                    if len(position) >= 4:
-                        logger.info(f"Curvance:   -> cToken: {position[0]}")
-                        logger.info(f"Curvance:   -> collateral: {position[1]}")
-                        logger.info(f"Curvance:   -> debt: {position[2]}")
-                        logger.info(f"Curvance:   -> health: {position[3]}")
-                        if len(position) > 4:
-                            logger.info(f"Curvance:   -> tokenBalance: {position[4]}")
-                if len(raw_positions) > 10:
-                    logger.info(f"Curvance:   ... and {len(raw_positions) - 10} more positions")
-                
-                # Build a map of cToken -> market info from market_data
-                # Each market entry has: (cToken, price, borrowRate, supplyRate, utilization, liquidity)
-                ctoken_to_market = {}
-                if market_data:
-                    logger.info(f"Curvance: ========== MARKET DATA MAPPING ==========")
-                    for idx, market in enumerate(market_data):
-                        market_ctoken = market[0]  # First element is cToken address
-                        ctoken_to_market[market_ctoken.lower()] = market
-                        if idx < 5:  # Log first 5
-                            logger.info(f"Curvance: Market {idx+1}: cToken={market_ctoken}, price={market[1]}, borrowRate={market[2]}, supplyRate={market[3]}")
-                    logger.info(f"Curvance: Built mapping for {len(ctoken_to_market)} markets")
                 
                 if not raw_positions:
                     logger.info(f"Curvance: No positions found for {user_address} (empty positions array)")
@@ -231,16 +201,9 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 logger.error(f"Curvance: Error calling getAllDynamicState for {user_address}: {e}", exc_info=True)
                 return positions
             
-                # Step 2: Get all MarketManagers
-                market_managers = protocols.get_curvance_market_managers(self.w3)
-                logger.info(f"Curvance: ========== MARKETMANAGERS FROM CENTRAL REGISTRY ==========")
-                logger.info(f"Curvance: Found {len(market_managers)} MarketManagers:")
-                for idx, mm in enumerate(market_managers[:10]):  # Log first 10
-                    logger.info(f"Curvance:   MM {idx+1}: {mm}")
-                if len(market_managers) > 10:
-                    logger.info(f"Curvance:   ... and {len(market_managers) - 10} more MarketManagers")
-                logger.info(f"Curvance: ========== STARTING POSITION MATCHING ==========")
-                logger.info(f"Curvance: Will try to match {len(raw_positions)} positions to {len(market_managers)} MarketManagers")
+            # Step 2: Get all MarketManagers
+            market_managers = protocols.get_curvance_market_managers(self.w3)
+            logger.info(f"Curvance: Found {len(market_managers)} MarketManagers, {len(raw_positions)} positions")
             
             # ERC20 ABI for token info
             erc20_abi = [
@@ -254,88 +217,85 @@ class CurvanceStrategy(LendingProtocolStrategy):
             # Key: (market_manager, cToken) to handle multiple positions in same MarketManager
             seen_positions = {}  # (market_manager, cToken) -> PositionData
             
+            # Cache health factors per MarketManager (since getPositionHealth returns aggregate health)
+            # Key: market_manager -> health_factor
+            mm_health_cache = {}  # market_manager -> health_factor
+            
             # Step 3: For each position, find its MarketManager and get health factor
-            logger.info(f"Curvance: Processing {len(raw_positions)} raw positions from getAllDynamicState")
-            for idx, position in enumerate(raw_positions):
+            for position in raw_positions:
                 # position structure: (cToken, collateral, debt, health, tokenBalance)
                 cToken = position[0]
                 collateral_raw = position[1]
                 debt_raw = position[2]
                 health_raw_from_state = position[3] if len(position) > 3 else 0  # Health from getAllDynamicState
                 
-                logger.info(f"Curvance: ========== PROCESSING POSITION {idx+1}/{len(raw_positions)} ==========")
-                logger.info(f"Curvance:   cToken: {cToken}")
-                logger.info(f"Curvance:   collateral: {collateral_raw}")
-                logger.info(f"Curvance:   debt: {debt_raw}")
-                logger.info(f"Curvance:   health_from_state (raw): {health_raw_from_state}")
-                logger.info(f"Curvance:   health_from_state (human): {health_raw_from_state / 1e18 if health_raw_from_state > 0 and health_raw_from_state <= 1e10 else 'INVALID'}")
-                logger.info(f"Curvance:   Will try {len(market_managers)} MarketManagers to find which one manages this cToken...")
+                logger.debug(f"Curvance: Processing position - cToken: {cToken}, collateral: {collateral_raw}, debt: {debt_raw}, health_from_state: {health_raw_from_state}")
                 
                 # Skip if no debt
                 if debt_raw == 0:
                     logger.debug(f"Curvance: Skipping position with no debt (cToken: {cToken})")
                     continue
                 
-                # Skip invalid cToken addresses (zero address or invalid)
-                zero_address = '0x0000000000000000000000000000000000000000'
-                if cToken.lower() == zero_address.lower():
-                    logger.debug(f"Curvance: Skipping position with zero cToken address")
-                    continue
-                
                 # Try each MarketManager to find the one that works
-                # CRITICAL: We need to verify that getPositionHealth returns a health factor that MATCHES
-                # the health from getAllDynamicState, otherwise it's the wrong MarketManager
                 market_manager_found = None
                 health_factor = None
-                expected_health_from_state = health_raw_from_state / 1e18 if health_raw_from_state > 0 and health_raw_from_state <= 1e10 else None
                 
+                # Check cache first (getPositionHealth returns aggregate health per MarketManager)
                 for mm_address in market_managers:
-                    try:
-                        # Call getPositionHealth to check existing position
-                        health_result = self.contract.functions.getPositionHealth(
-                            self.w3.to_checksum_address(mm_address),  # mm
-                            address_checksum,  # account
-                            cToken,  # cToken
-                            zero_address,  # borrowableCToken (0 for checking existing)
-                            False,  # isDeposit
-                            0,  # collateralAssets (0 = check existing)
-                            False,  # isRepayment
-                            0,  # debtAssets (0 = check existing)
-                            0  # bufferTime
-                        ).call()
-                        
-                        position_health_raw, error_code_hit = health_result
-                        
-                        if error_code_hit:
-                            logger.info(f"Curvance:   ❌ MM {mm_address[:10]}...: error_code_hit=True")
-                            continue  # Try next MarketManager
-                        
-                        if position_health_raw > 0:
-                            health_factor_candidate = position_health_raw / 1e18
+                    mm_lower = mm_address.lower()
+                    if mm_lower in mm_health_cache:
+                        # Use cached aggregate health for this MarketManager
+                        health_factor = mm_health_cache[mm_lower]
+                        market_manager_found = mm_address
+                        logger.debug(f"Curvance: Using cached aggregate health {health_factor:.3f} for MM {mm_address}, cToken {cToken}")
+                        break
+                
+                # If not in cache, find MarketManager and cache the health factor
+                if not health_factor:
+                    for mm_address in market_managers:
+                        try:
+                            # Call getPositionHealth to get aggregate health for this MarketManager
+                            # Note: This returns aggregate health combining ALL positions in this MarketManager
+                            health_result = self.contract.functions.getPositionHealth(
+                                self.w3.to_checksum_address(mm_address),  # mm
+                                address_checksum,  # account
+                                cToken,  # cToken
+                                zero_address,  # borrowableCToken (0 for checking existing)
+                                False,  # isDeposit
+                                0,  # collateralAssets (0 = check existing)
+                                False,  # isRepayment
+                                0,  # debtAssets (0 = check existing)
+                                0  # bufferTime
+                            ).call()
                             
-                            # Skip if getPositionHealth returned max uint256 (invalid)
-                            if health_factor_candidate > 1e10:
-                                logger.info(f"Curvance:   ❌ MM {mm_address[:10]}...: max uint256 (invalid)")
-                                continue  # Try next MarketManager or use fallback
+                            position_health_raw, error_code_hit = health_result
                             
-                            # CRITICAL FIX: Verify that getPositionHealth health matches getAllDynamicState health
-                            # If they don't match (within 1% tolerance), this is the WRONG MarketManager
-                            if expected_health_from_state:
-                                health_diff = abs(health_factor_candidate - expected_health_from_state)
-                                health_tolerance = expected_health_from_state * 0.01  # 1% tolerance
-                                if health_diff > health_tolerance:
-                                    logger.info(f"Curvance:   ❌ MM {mm_address[:10]}...: health {health_factor_candidate:.3f} doesn't match state {expected_health_from_state:.3f} (diff: {health_diff:.3f}, tolerance: {health_tolerance:.3f})")
-                                    continue  # Wrong MarketManager, try next
+                            if error_code_hit:
+                                logger.debug(f"Curvance: getPositionHealth returned error_code_hit=True for MM {mm_address}, cToken {cToken}")
+                                continue  # Try next MarketManager
                             
-                            health_factor = health_factor_candidate
-                            market_manager_found = mm_address
-                            logger.info(f"Curvance:   ✅ MM {mm_address}: MATCHED! health={health_factor:.3f}, state={expected_health_from_state:.3f if expected_health_from_state else 'N/A'}")
-                            break  # Found correct MarketManager
-                        else:
-                            logger.info(f"Curvance:   ❌ MM {mm_address[:10]}...: returned 0 health")
-                    except Exception as e:
-                        logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
-                        continue
+                            if position_health_raw > 0:
+                                health_factor_candidate = position_health_raw / 1e18
+                                
+                                # Skip if getPositionHealth returned max uint256 (invalid)
+                                if health_factor_candidate > 1e10:
+                                    logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}, using fallback")
+                                    continue  # Try next MarketManager or use fallback
+                                
+                                health_factor = health_factor_candidate
+                                market_manager_found = mm_address
+                                
+                                # Cache the aggregate health for this MarketManager (all positions in same MM share same health)
+                                mm_lower = mm_address.lower()
+                                mm_health_cache[mm_lower] = health_factor
+                                
+                                logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, aggregate health: {health_factor:.3f}")
+                                break  # Found working MarketManager
+                            else:
+                                logger.debug(f"Curvance: getPositionHealth returned 0 health for MM {mm_address}, cToken {cToken}")
+                        except Exception as e:
+                            logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
+                            continue
                 
                 # Fallback to health from getAllDynamicState if getPositionHealth failed or returned max uint256
                 if not health_factor and health_raw_from_state > 0:
@@ -382,16 +342,12 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 # Each position with a different collateral token is a separate position
                 position_key = (market_manager_found.lower() if market_manager_found else None, cToken.lower() if cToken else None)
                 
-                logger.info(f"Curvance: Position key: MM={position_key[0]}, cToken={position_key[1]}, health={health_factor:.3f}, collateral_symbol={collateral_symbol}, collateral_amount={collateral_amount:.4f}, debt_amount={debt_amount:.4f}")
-                
                 if position_key[0] and position_key[1]:
                     # Use market_id as combination of MarketManager and cToken for unique identification
                     unique_market_id = f"{market_manager_found}_{cToken}"
                     
-                    # Check if we already have a position with this exact (MarketManager, cToken) combination
                     if position_key not in seen_positions:
                         # First time seeing this (MarketManager, cToken) combination
-                        logger.info(f"Curvance: ✅ Adding NEW position - MM: {market_manager_found}, cToken: {cToken}, symbol: {collateral_symbol}, collateral={collateral_amount:.4f}, debt={debt_amount:.4f}, health: {health_factor:.3f}")
                         seen_positions[position_key] = PositionData(
                             protocol_name="Curvance",
                             market_name=f"Curvance Market ({collateral_symbol})",
@@ -413,9 +369,7 @@ class CurvanceStrategy(LendingProtocolStrategy):
                         )
                     else:
                         # Already seen this (MarketManager, cToken) - this shouldn't happen, but log it
-                        existing = seen_positions[position_key]
-                        logger.warning(f"Curvance: Duplicate position detected for MM {market_manager_found}, cToken {cToken}. Existing: symbol={existing.collateral.symbol}, health={existing.health_factor:.3f}, New: symbol={collateral_symbol}, health={health_factor:.3f}")
-                        # Skip duplicate - keep the first one
+                        logger.warning(f"Curvance: Duplicate position detected for MM {market_manager_found}, cToken {cToken}")
             
             # Convert deduplicated positions to list
             positions = list(seen_positions.values())

@@ -1030,7 +1030,7 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
                         # Get market name from market_info, or construct from collateral symbol
                         market_name = market_info.get('name', 'Curvance Market') if market_info else 'Curvance Market'
-                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
+                        address_message += f"{status}[{market_name}]({market_url}):\nAggregated Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     # elif protocol_id == 'euler' and market_id:
                     #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
                     #     # Use the monitored address (not vault address) for the URL
@@ -1275,12 +1275,17 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f}, Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'curvance' and market_id:
-                        # Extract MarketManager address from market_id (format: "marketmanager_ctoken" or just "marketmanager")
-                        market_manager_address = market_id.split('_')[0] if '_' in market_id else market_id
-                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        # market_id is now just the cToken address (simplified approach)
+                        # Try to extract MarketManager if format is "marketmanager_ctoken", otherwise use cToken
+                        if '_' in market_id:
+                            market_manager_address = market_id.split('_')[0]
+                            market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        else:
+                            # Just cToken - use it directly (Curvance frontend may handle this)
+                            market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
                         # Get market name from market_info, or construct from collateral symbol
                         market_name = market_info.get('name', 'Curvance Market') if market_info else 'Curvance Market'
-                        address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
+                        address_message += f"{status}[{market_name}]({market_url}):\nAggregated Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     # elif protocol_id == 'euler' and market_id:
                     #     # Euler vault URL format: /positions/{account}/{vault}?network=monad
                     #     # Use the monitored address (not vault address) for the URL
@@ -1674,7 +1679,7 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
             )
             
             if rebalancing_msg:
-                # Send rebalancing suggestions
+                # Send rebalancing message (now includes address and protocol)
                 await context.bot.send_message(
                     chat_id=int(chat_id),
                     text=rebalancing_msg,
@@ -1683,12 +1688,15 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
                 )
             else:
                 # Fallback to simple alert if rebalancing message generation fails
-                message = f"⚠️ Alert: Health factor for {alert['address']} on {alert['protocol']['name']} is {alert['health_factor']:.4f}, which is below your threshold of {alert['threshold']}!\n\n"
+                # Include address and protocol info
+                message = f"⚠️ Health Factor Alert: {alert['health_factor']:.4f} < {alert['threshold']:.3f}\n\n"
+                message += f"Address: `{alert['address']}`\n"
+                message += f"Protocol: {alert['protocol']['name']}\n"
                 if alert.get('market_id'):
                     message += f"Market ID: {alert['market_id'][:20]}...\n"
-                message += f"Check your position: {alert['protocol']['app_url']}\n"
+                message += f"\nCheck your position: {alert['protocol']['app_url']}\n"
                 message += f"View on explorer: {alert['protocol']['explorer_url']}/address/{alert['address']}"
-                await context.bot.send_message(chat_id=int(chat_id), text=message)
+                await context.bot.send_message(chat_id=int(chat_id), text=message, parse_mode='Markdown')
 
 # Function to periodically check health factors
 async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:

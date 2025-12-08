@@ -117,6 +117,10 @@ def check_curvance_health_factor(address: str, contract, w3, market_manager_addr
     """
     Check health factor for Curvance protocol using ProtocolReader.getPositionHealth.
     
+    IMPORTANT: getPositionHealth() returns AGGREGATE health for the account within a MarketManager,
+    not per-position health. The aggregate combines ALL collateral and ALL debt across ALL positions
+    in that MarketManager to calculate one overall health factor.
+    
     Args:
         address: User's wallet address
         contract: ProtocolReader contract instance
@@ -125,7 +129,7 @@ def check_curvance_health_factor(address: str, contract, w3, market_manager_addr
         known_market_managers: List of MarketManager addresses to try (if market_manager_address not provided)
     
     Returns:
-        Health factor as float (worst health across all positions), or None if error
+        Health factor as float (worst aggregate health across all MarketManagers), or None if error
     """
     try:
         # Convert address to checksum format
@@ -214,9 +218,10 @@ def check_curvance_health_factor(address: str, contract, w3, market_manager_addr
                     if position_health_raw > 0:
                         # Health factor is in 18 decimals (1e18 = 1.0)
                         # Note: 151% = 1.51, so 1510000000000000000 / 1e18 = 1.51
+                        # IMPORTANT: This is aggregate health for the account in this MarketManager
                         health_factor = position_health_raw / 1e18
                         health_factors.append(health_factor)
-                        logger.debug(f"Curvance position: cToken={cToken}, MarketManager={mm_address}, health={health_factor:.4f} ({health_factor*100:.1f}%)")
+                        logger.debug(f"Curvance position: cToken={cToken}, MarketManager={mm_address}, aggregate health={health_factor:.4f} ({health_factor*100:.1f}%)")
                         position_health_found = True
                         break  # Found working MarketManager for this position
                     else:
@@ -255,6 +260,9 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
     """
     Get Curvance position details including token symbols, raw amounts, MarketManager, and health factor.
     
+    IMPORTANT: getPositionHealth() returns AGGREGATE health for the account within a MarketManager.
+    Positions in the same MarketManager will show the same aggregate health factor.
+    
     Args:
         address: User's wallet address
         contract: ProtocolReader contract instance
@@ -264,7 +272,7 @@ def get_curvance_position_details(address: str, contract, w3, market_manager_add
     
     Returns:
         List of position dicts with: cToken, market_manager, collateral_token_symbol, collateral_amount, 
-        debt_token_symbol, debt_amount, health_factor
+        debt_token_symbol, debt_amount, health_factor (aggregate per MarketManager)
     """
     position_details = []
     

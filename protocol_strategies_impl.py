@@ -213,9 +213,9 @@ class CurvanceStrategy(LendingProtocolStrategy):
             
             zero_address = '0x0000000000000000000000000000000000000000'
             
-            # Track positions we've already seen to avoid duplicates
-            # Key: (market_manager, cToken) to handle multiple positions in same MarketManager
-            seen_positions = {}  # (market_manager, cToken) -> PositionData
+            # Group positions by MarketManager (since aggregate health is per MarketManager)
+            # Key: market_manager -> {health_factor, collateral_tokens: [], total_collateral, total_debt}
+            mm_positions = {}  # market_manager -> position data
             
             # Cache health factors per MarketManager (since getPositionHealth returns aggregate health)
             # Key: market_manager -> health_factor
@@ -328,52 +328,90 @@ class CurvanceStrategy(LendingProtocolStrategy):
                     collateral_amount = collateral_raw / (10 ** collateral_decimals)
                 except Exception as e:
                     logger.debug(f"Error getting token info for {cToken}: {e}")
-                    collateral_symbol = "?"
-                    collateral_amount = collateral_raw
+                    # Try to extract address from cToken if it's packed
+                    if isinstance(cToken, int):
+                        hex_str = hex(cToken)[2:].zfill(64)
+                        address_hex = hex_str[-40:]
+                        cToken_clean = '0x' + address_hex
+                        try:
+                            token_contract = self.w3.eth.contract(address=cToken_clean, abi=erc20_abi)
+                            collateral_symbol = token_contract.functions.symbol().call()
+                            collateral_decimals = token_contract.functions.decimals().call()
+                            collateral_amount = collateral_raw / (10 ** collateral_decimals)
+                        except:
+                            collateral_symbol = "?"
+                            collateral_amount = collateral_raw
+                    else:
+                        collateral_symbol = "?"
+                        collateral_amount = collateral_raw
                 
                 # Debt token info (simplified - would need MarketManager to get actual borrowable token)
                 debt_symbol = "?"
                 debt_decimals = 18
                 debt_amount = debt_raw / (10 ** debt_decimals)
                 
-                logger.debug(f"Curvance: Position found - MM: {market_manager_found}, cToken: {cToken}, health: {health_factor:.3f}")
+                logger.debug(f"Curvance: Position found - MM: {market_manager_found}, cToken: {cToken}, symbol: {collateral_symbol}, health: {health_factor:.3f}")
                 
-                # Create unique key: (market_manager, cToken) to handle multiple positions in same MarketManager
-                # Each position with a different collateral token is a separate position
-                position_key = (market_manager_found.lower() if market_manager_found else None, cToken.lower() if cToken else None)
+                # Group by MarketManager (aggregate health is per MarketManager)
+                mm_lower = market_manager_found.lower()
+                if mm_lower not in mm_positions:
+                    mm_positions[mm_lower] = {
+                        'market_manager': market_manager_found,
+                        'health_factor': health_factor,
+                        'collateral_tokens': [],
+                        'total_collateral': 0,
+                        'total_debt': 0,
+                        'debt_symbol': debt_symbol
+                    }
                 
-                if position_key[0] and position_key[1]:
-                    # Use market_id as combination of MarketManager and cToken for unique identification
-                    unique_market_id = f"{market_manager_found}_{cToken}"
-                    
-                    if position_key not in seen_positions:
-                        # First time seeing this (MarketManager, cToken) combination
-                        seen_positions[position_key] = PositionData(
-                            protocol_name="Curvance",
-                            market_name=f"Curvance Market ({collateral_symbol})",
-                            market_id=unique_market_id,
-                            health_factor=health_factor,
-                            collateral=Asset(
-                                symbol=collateral_symbol,
-                                amount=collateral_amount,
-                                usd_value=collateral_amount,  # Rough estimate
-                                decimals=18
-                            ),
-                            debt=Asset(
-                                symbol=debt_symbol,
-                                amount=debt_amount,
-                                usd_value=debt_amount,  # Rough estimate
-                                decimals=18
-                            ),
-                            app_url=self.app_url
-                        )
-                    else:
-                        # Already seen this (MarketManager, cToken) - this shouldn't happen, but log it
-                        logger.warning(f"Curvance: Duplicate position detected for MM {market_manager_found}, cToken {cToken}")
+                # Add this position's data to the MarketManager group
+                mm_positions[mm_lower]['collateral_tokens'].append({
+                    'symbol': collateral_symbol,
+                    'amount': collateral_amount,
+                    'cToken': cToken
+                })
+                mm_positions[mm_lower]['total_collateral'] += collateral_amount
+                mm_positions[mm_lower]['total_debt'] += debt_amount
             
-            # Convert deduplicated positions to list
-            positions = list(seen_positions.values())
-            logger.info(f"Curvance: Found {len(positions)} unique positions from {len(raw_positions)} raw positions")
+            # Convert grouped positions to PositionData list (one per MarketManager)
+            for mm_lower, mm_data in mm_positions.items():
+                # Create market name from collateral tokens
+                collateral_symbols = [ct['symbol'] for ct in mm_data['collateral_tokens']]
+                unique_symbols = list(dict.fromkeys(collateral_symbols))  # Preserve order, remove duplicates
+                if len(unique_symbols) == 1:
+                    market_name = f"Curvance Market ({unique_symbols[0]})"
+                elif len(unique_symbols) <= 3:
+                    market_name = f"Curvance Market ({', '.join(unique_symbols)})"
+                else:
+                    market_name = f"Curvance Market ({', '.join(unique_symbols[:3])}...)"
+                
+                # Use MarketManager address as market_id (since aggregate health is per MarketManager)
+                market_id = mm_data['market_manager']
+                
+                # Use first collateral symbol for display (or "Mixed" if multiple)
+                display_collateral_symbol = unique_symbols[0] if unique_symbols else "?"
+                
+                positions.append(PositionData(
+                    protocol_name="Curvance",
+                    market_name=market_name,
+                    market_id=market_id,
+                    health_factor=mm_data['health_factor'],
+                    collateral=Asset(
+                        symbol=display_collateral_symbol,
+                        amount=mm_data['total_collateral'],
+                        usd_value=mm_data['total_collateral'],  # Rough estimate
+                        decimals=18
+                    ),
+                    debt=Asset(
+                        symbol=mm_data['debt_symbol'],
+                        amount=mm_data['total_debt'],
+                        usd_value=mm_data['total_debt'],  # Rough estimate
+                        decimals=18
+                    ),
+                    app_url=self.app_url
+                ))
+            
+            logger.info(f"Curvance: Found {len(positions)} MarketManagers with positions from {len(raw_positions)} raw positions")
         except Exception as e:
             logger.error(f"Error fetching Curvance positions: {e}", exc_info=True)
         

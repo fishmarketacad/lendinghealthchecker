@@ -1025,10 +1025,10 @@ async def build_check_message(chat_id: str, addresses: List[str], filter_protoco
                         market_url = f"https://app.morpho.org/monad/market/{market_id_for_url}/{market_info.get('name', 'unknown')}?subTab=yourPosition"
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     elif protocol_id == 'curvance' and market_id:
-                        # Extract MarketManager address from market_id (format: "marketmanager_ctoken" or just "marketmanager")
-                        market_manager_address = market_id.split('_')[0] if '_' in market_id else market_id
+                        # market_id is now the MarketManager address (grouped by MarketManager)
+                        market_manager_address = market_id
                         market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
-                        # Get market name from market_info, or construct from collateral symbol
+                        # Get market name from market_info (includes collateral token symbols)
                         market_name = market_info.get('name', 'Curvance Market') if market_info else 'Curvance Market'
                         address_message += f"{status}[{market_name}]({market_url}):\nAggregated Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}\n"
                     # elif protocol_id == 'euler' and market_id:
@@ -1275,15 +1275,10 @@ async def build_position_message(chat_id: str, addresses: List[str], filter_prot
                             liquidation_drop_pct = (1 - (1 / health_factor)) * 100 if health_factor > 0 else 0
                         address_message += f"{status}[{market_name}]({market_url}):\nCurrent Health: {health_factor:.3f}, Alert at {threshold_str}{tvl_debt_str}\n"
                     elif protocol_id == 'curvance' and market_id:
-                        # market_id is now just the cToken address (simplified approach)
-                        # Try to extract MarketManager if format is "marketmanager_ctoken", otherwise use cToken
-                        if '_' in market_id:
-                            market_manager_address = market_id.split('_')[0]
-                            market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
-                        else:
-                            # Just cToken - use it directly (Curvance frontend may handle this)
-                            market_url = f"{protocol_info.get('app_url', '')}/market/{market_id}"
-                        # Get market name from market_info, or construct from collateral symbol
+                        # market_id is now the MarketManager address (grouped by MarketManager)
+                        market_manager_address = market_id
+                        market_url = f"{protocol_info.get('app_url', '')}/market/{market_manager_address}"
+                        # Get market name from market_info (includes collateral token symbols)
                         market_name = market_info.get('name', 'Curvance Market') if market_info else 'Curvance Market'
                         address_message += f"{status}[{market_name}]({market_url}):\nAggregated Health: {health_factor:.3f} ({liquidation_drop_pct:.1f}% from liquidation), Alert at {threshold_str}{tvl_debt_str}\n"
                     # elif protocol_id == 'euler' and market_id:

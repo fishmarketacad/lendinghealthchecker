@@ -391,62 +391,58 @@ class CurvanceStrategy(LendingProtocolStrategy):
                 market_manager_found = None
                 health_factor = None
                 
-                # Check cache first (getPositionHealth returns aggregate health per MarketManager)
+                # Find MarketManager by calling getPositionHealth with each one
                 for mm_address in market_managers:
-                    mm_lower = mm_address.lower()
-                    if mm_lower in mm_health_cache:
-                        # Use cached aggregate health for this MarketManager
-                        health_factor = mm_health_cache[mm_lower]
-                        market_manager_found = mm_address
-                        logger.debug(f"Curvance: Using cached aggregate health {health_factor:.3f} for MM {mm_address}, cToken {cToken}")
-                        break
-                
-                # If not in cache, find MarketManager and cache the health factor
-                if not health_factor:
-                    for mm_address in market_managers:
-                        try:
-                            # Call getPositionHealth to get aggregate health for this MarketManager
-                            # Note: This returns aggregate health combining ALL positions in this MarketManager
-                            health_result = self.contract.functions.getPositionHealth(
-                                self.w3.to_checksum_address(mm_address),  # mm
-                                address_checksum,  # account
-                                cToken,  # cToken
-                                zero_address,  # borrowableCToken (0 for checking existing)
-                                False,  # isDeposit
-                                0,  # collateralAssets (0 = check existing)
-                                False,  # isRepayment
-                                0,  # debtAssets (0 = check existing)
-                                0  # bufferTime
-                            ).call()
+                    try:
+                        # Call getPositionHealth to get aggregate health for this MarketManager
+                        # Note: This returns aggregate health combining ALL positions in this MarketManager
+                        health_result = self.contract.functions.getPositionHealth(
+                            self.w3.to_checksum_address(mm_address),  # mm
+                            address_checksum,  # account
+                            cToken,  # cToken
+                            zero_address,  # borrowableCToken (0 for checking existing)
+                            False,  # isDeposit
+                            0,  # collateralAssets (0 = check existing)
+                            False,  # isRepayment
+                            0,  # debtAssets (0 = check existing)
+                            0  # bufferTime
+                        ).call()
+                        
+                        position_health_raw, error_code_hit = health_result
+                        
+                        if error_code_hit:
+                            logger.debug(f"Curvance: getPositionHealth returned error_code_hit=True for MM {mm_address}, cToken {cToken}")
+                            continue  # Try next MarketManager
+                        
+                        if position_health_raw > 0:
+                            health_factor_candidate = position_health_raw / 1e18
                             
-                            position_health_raw, error_code_hit = health_result
+                            # Skip if getPositionHealth returned max uint256 (invalid)
+                            if health_factor_candidate > 1e10:
+                                logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}, using fallback")
+                                continue  # Try next MarketManager or use fallback
                             
-                            if error_code_hit:
-                                logger.debug(f"Curvance: getPositionHealth returned error_code_hit=True for MM {mm_address}, cToken {cToken}")
-                                continue  # Try next MarketManager
+                            # Found valid MarketManager for this position
+                            health_factor = health_factor_candidate
+                            market_manager_found = mm_address
                             
-                            if position_health_raw > 0:
-                                health_factor_candidate = position_health_raw / 1e18
-                                
-                                # Skip if getPositionHealth returned max uint256 (invalid)
-                                if health_factor_candidate > 1e10:
-                                    logger.debug(f"Curvance: getPositionHealth returned max uint256 for MM {mm_address}, cToken {cToken}, using fallback")
-                                    continue  # Try next MarketManager or use fallback
-                                
-                                health_factor = health_factor_candidate
-                                market_manager_found = mm_address
-                                
-                                # Cache the aggregate health for this MarketManager (all positions in same MM share same health)
-                                mm_lower = mm_address.lower()
-                                mm_health_cache[mm_lower] = health_factor
-                                
-                                logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, aggregate health: {health_factor:.3f}")
-                                break  # Found working MarketManager
+                            # Check cache - if we've already processed this MarketManager, use cached health
+                            # (all positions in same MarketManager share the same aggregate health)
+                            mm_lower = mm_address.lower()
+                            if mm_lower in mm_health_cache:
+                                health_factor = mm_health_cache[mm_lower]
+                                logger.debug(f"Curvance: Using cached aggregate health {health_factor:.3f} for MM {mm_address}, cToken {cToken}")
                             else:
-                                logger.debug(f"Curvance: getPositionHealth returned 0 health for MM {mm_address}, cToken {cToken}")
-                        except Exception as e:
-                            logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
-                            continue
+                                # Cache the aggregate health for this MarketManager
+                                mm_health_cache[mm_lower] = health_factor
+                                logger.info(f"Curvance: Found working MarketManager {mm_address} for cToken {cToken}, aggregate health: {health_factor:.3f}")
+                            
+                            break  # Found working MarketManager
+                        else:
+                            logger.debug(f"Curvance: getPositionHealth returned 0 health for MM {mm_address}, cToken {cToken}")
+                    except Exception as e:
+                        logger.debug(f"Curvance: Exception calling getPositionHealth with MM {mm_address}, cToken {cToken}: {e}")
+                        continue
                 
                 # Fallback to health from getAllDynamicState if getPositionHealth failed or returned max uint256
                 if not health_factor and health_raw_from_state > 0:

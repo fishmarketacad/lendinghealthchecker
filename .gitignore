@@ -9,11 +9,25 @@ __pycache__/
 # Environment variables
 .env
 .env.local
+.env.*
 
-# User data
+# User data (production data should not be committed)
 *.json
 !package.json
 !package-lock.json
+!abis/*.json
+
+# Test files
+*test*.py
+curvancetest.py
+test_*.py
+
+# Logs
+*.log
+bot.log
+
+# Deployment scripts (keep main ones, exclude test scripts)
+test-bot.sh
 
 # IDE
 .vscode/
@@ -24,4 +38,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# PM2 (keep ecosystem.config.js as it's useful for deployment)
+# ecosystem.config.js
 

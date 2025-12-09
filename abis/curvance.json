@@ -1,0 +1,149 @@
+[
+  {
+    "constant": true,
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "getAllDynamicState",
+    "outputs": [
+      {
+        "components": [
+          {
+            "name": "cToken",
+            "type": "address"
+          },
+          {
+            "name": "price",
+            "type": "uint256"
+          },
+          {
+            "name": "borrowRate",
+            "type": "uint256"
+          },
+          {
+            "name": "supplyRate",
+            "type": "uint256"
+          },
+          {
+            "name": "utilization",
+            "type": "uint256"
+          },
+          {
+            "name": "liquidity",
+            "type": "uint256"
+          }
+        ],
+        "name": "market",
+        "type": "tuple[]"
+      },
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "amount",
+                "type": "uint256"
+              },
+              {
+                "name": "unlockTime",
+                "type": "uint256"
+              }
+            ],
+            "name": "veCVE",
+            "type": "tuple[]"
+          },
+          {
+            "components": [
+              {
+                "name": "cToken",
+                "type": "address"
+              },
+              {
+                "name": "collateral",
+                "type": "uint256"
+              },
+              {
+                "name": "debt",
+                "type": "uint256"
+              },
+              {
+                "name": "health",
+                "type": "uint256"
+              },
+              {
+                "name": "tokenBalance",
+                "type": "uint256"
+              }
+            ],
+            "name": "positions",
+            "type": "tuple[]"
+          }
+        ],
+        "name": "user",
+        "type": "tuple"
+      }
+    ],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "constant": true,
+    "inputs": [
+      {
+        "name": "mm",
+        "type": "address"
+      },
+      {
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "name": "cToken",
+        "type": "address"
+      },
+      {
+        "name": "borrowableCToken",
+        "type": "address"
+      },
+      {
+        "name": "isDeposit",
+        "type": "bool"
+      },
+      {
+        "name": "collateralAssets",
+        "type": "uint256"
+      },
+      {
+        "name": "isRepayment",
+        "type": "bool"
+      },
+      {
+        "name": "debtAssets",
+        "type": "uint256"
+      },
+      {
+        "name": "bufferTime",
+        "type": "uint256"
+      }
+    ],
+    "name": "getPositionHealth",
+    "outputs": [
+      {
+        "name": "positionHealth",
+        "type": "uint256"
+      },
+      {
+        "name": "errorCodeHit",
+        "type": "bool"
+      }
+    ],
+    "payable": false,
+    "stateMutability": "view",
+    "type": "function"
+  }
+]
+

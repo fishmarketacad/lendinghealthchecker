@@ -4,10 +4,10 @@ A Telegram bot that monitors health factors for lending positions across multipl
 
 ## Supported Protocols
 
-- **Neverland** - Unified lending protocol
-- **Morpho Blue** - Peer-to-peer lending protocol
-- **Curvance** - Unified lending protocol with aggregate health factors
-- **Euler V2** - Isolated vault lending protocol
+- **Neverland** - Unified lending protocol ✅
+- **Morpho Blue** - Peer-to-peer lending protocol ✅
+- **Curvance** - Unified lending protocol with aggregate health factors ✅
+- **Euler V2** - Isolated vault lending protocol ⚠️ (Limited support - no subgraph on Monad)
 
 ## Features
 

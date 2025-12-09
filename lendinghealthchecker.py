@@ -144,17 +144,17 @@ protocol_manager.register_strategy(
     )
 )
 
-# Register Euler strategy
-euler_info = PROTOCOL_CONFIG['euler']
-euler_w3 = Web3(Web3.HTTPProvider(euler_info['rpc_url']))
-protocol_manager.register_strategy(
-    EulerStrategy(
-        euler_w3,
-        euler_info['account_lens_address'],
-        euler_info['pool_address'],  # EVC address
-        euler_info['app_url']
-    )
-)
+# Register Euler strategy (disabled - no subgraph on Monad yet)
+# euler_info = PROTOCOL_CONFIG['euler']
+# euler_w3 = Web3(Web3.HTTPProvider(euler_info['rpc_url']))
+# protocol_manager.register_strategy(
+#     EulerStrategy(
+#         euler_w3,
+#         euler_info['account_lens_address'],
+#         euler_info['pool_address'],  # EVC address
+#         euler_info['app_url']
+#     )
+# )
 
 # Debug: Print environment variables
 print("TELEGRAM_BOT_TOKEN:", "SET" if TOKEN else "NOT SET")

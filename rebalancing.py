@@ -165,9 +165,6 @@ def generate_rebalancing_message(
     borrow_assets_usd = worst_market.get('borrowAssetsUsd', 0)
     supply_assets_usd = worst_market.get('supplyAssetsUsd', 0)
     
-    # Get vault balances
-    vault_balances = get_vault_balances_by_asset(address, chain_id)
-    
     # Calculate repayment needed (simplified - would need LLTV from contract)
     # For now, estimate based on HF ratio
     target_hf = threshold * 1.1  # Target 10% above threshold for safety
@@ -175,50 +172,12 @@ def generate_rebalancing_message(
     
     message_parts = []
     message_parts.append(f"⚠️ Health Factor Alert: {current_hf:.3f} < {threshold:.3f}")
+    message_parts.append(f"\nAddress: `{address}`")
+    message_parts.append(f"Protocol: Morpho")
     message_parts.append(f"\nMarket: {worst_market.get('name', 'Unknown').upper()}")
     message_parts.append(f"Loan Asset: {loan_asset}")
     message_parts.append(f"Borrowed: ${borrow_assets_usd:,.2f}")
-    
-    # Check vault balances for loan asset
-    if loan_asset in vault_balances:
-        vault_info = vault_balances[loan_asset]
-        total_vault_usd = vault_info['total_assets_usd']
-        
-        message_parts.append(f"\n💰 Vault Balance Available:")
-        message_parts.append(f"  {loan_asset}: ${total_vault_usd:,.2f}")
-        
-        if total_vault_usd >= repayment_needed_usd:
-            message_parts.append(f"\n✅ Option 1: Repay Debt (Sufficient)")
-            message_parts.append(f"  1. Withdraw ~${repayment_needed_usd:,.2f} {loan_asset} from vaults:")
-            for vault in vault_info['vaults']:
-                vault_url = f"https://app.morpho.org/monad/vault/{vault['address']}/{vault['name'].lower().replace(' ', '-')}?subTab=yourPosition"
-                message_parts.append(f"     - [{vault['name']}]({vault_url})")
-            message_parts.append(f"  2. Repay ${repayment_needed_usd:,.2f} {loan_asset} loan")
-        else:
-            message_parts.append(f"\n⚠️ Option 1: Repay Debt (Partial)")
-            message_parts.append(f"  1. Withdraw ${total_vault_usd:,.2f} {loan_asset} from vaults:")
-            for vault in vault_info['vaults']:
-                vault_url = f"https://app.morpho.org/monad/vault/{vault['address']}/{vault['name'].lower().replace(' ', '-')}?subTab=yourPosition"
-                message_parts.append(f"     - [{vault['name']}]({vault_url})")
-            remaining = repayment_needed_usd - total_vault_usd
-            message_parts.append(f"  2. Repay ${total_vault_usd:,.2f} {loan_asset} loan")
-            message_parts.append(f"  3. Remaining loan: ${remaining:,.2f} {loan_asset}")
-    else:
-        message_parts.append(f"\n❌ No {loan_asset} in vaults")
-        message_parts.append(f"  Need to repay ${repayment_needed_usd:,.2f} {loan_asset}")
-    
-    # Check if user has collateral asset available
-    if collateral_asset in vault_balances:
-        collateral_info = vault_balances[collateral_asset]
-        total_collateral_usd = collateral_info['total_assets_usd']
-        
-        message_parts.append(f"\n💰 Option 2: Deposit Collateral")
-        message_parts.append(f"  {collateral_asset} available: ${total_collateral_usd:,.2f}")
-        message_parts.append(f"  1. Withdraw {collateral_asset} from vaults:")
-        for vault in collateral_info['vaults']:
-            vault_url = f"https://app.morpho.org/monad/vault/{vault['address']}/{vault['name'].lower().replace(' ', '-')}?subTab=yourPosition"
-            message_parts.append(f"     - [{vault['name']}]({vault_url})")
-        message_parts.append(f"  2. Deposit {collateral_asset} as collateral")
+    message_parts.append(f"\nNeed to repay ~${repayment_needed_usd:,.2f} {loan_asset} to reach safe threshold")
     
     market_url = f"https://app.morpho.org/monad/market/{worst_market['id']}/{worst_market['name']}?subTab=yourPosition"
     message_parts.append(f"\n[View Position]({market_url})")

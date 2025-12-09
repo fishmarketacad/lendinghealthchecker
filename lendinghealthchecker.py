@@ -1692,13 +1692,16 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
                 
                 if health_factor < threshold:
                     protocol_info = PROTOCOL_CONFIG[pos['protocol_id']]
+                    market_info = pos.get('market_info', {})
+                    market_name = market_info.get('name') if market_info else None
                     alerts.append({
                         'address': address,
                         'health_factor': health_factor,
                         'threshold': threshold,
                         'protocol': protocol_info,
                         'protocol_id': pos['protocol_id'],
-                        'market_id': pos['market_id']
+                        'market_id': pos['market_id'],
+                        'market_name': market_name
                     })
         except Exception as e:
             logger.error(f"Error checking positions for {address}: {e}")
@@ -1731,7 +1734,10 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
                 message = f"⚠️ Health Factor Alert: {alert['health_factor']:.4f} < {alert['threshold']:.3f}\n\n"
                 message += f"Address: `{alert['address']}`\n"
                 message += f"Protocol: {alert['protocol']['name']}\n"
-                if alert.get('market_id'):
+                # Show market name if available, otherwise fall back to market ID
+                if alert.get('market_name'):
+                    message += f"Market: {alert['market_name']}\n"
+                elif alert.get('market_id'):
                     message += f"Market ID: {alert['market_id'][:20]}...\n"
                 message += f"\nCheck your position: {alert['protocol']['app_url']}\n"
                 message += f"View on explorer: {alert['protocol']['explorer_url']}/address/{alert['address']}"

@@ -1798,13 +1798,23 @@ async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not chat_ids:
         return
     
+    start_time = time.time()
+    logger.info(f"[PARALLEL] Starting periodic check for {len(chat_ids)} users")
+    
     async def check_user(chat_id: str):
         """Check a single user with semaphore limit."""
+        user_start = time.time()
         async with user_processing_semaphore:
+            logger.debug(f"[PARALLEL] Processing user {chat_id[:8]}... (concurrent limit: {USER_PROCESSING_LIMIT})")
             await check_and_notify(context, chat_id)
+            elapsed = time.time() - user_start
+            logger.debug(f"[PARALLEL] Completed user {chat_id[:8]}... in {elapsed:.2f}s")
     
     # Process all users in parallel (limited by semaphore)
     await asyncio.gather(*[check_user(chat_id) for chat_id in chat_ids], return_exceptions=True)
+    
+    total_elapsed = time.time() - start_time
+    logger.info(f"[PARALLEL] Completed periodic check for {len(chat_ids)} users in {total_elapsed:.2f}s (avg: {total_elapsed/len(chat_ids):.2f}s per user)")
 
 def main() -> None:
     if not TOKEN:

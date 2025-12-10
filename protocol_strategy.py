@@ -10,6 +10,7 @@ from typing import List, Optional
 from web3 import Web3
 import logging
 import asyncio
+from time import time
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +142,17 @@ class ProtocolManager:
                 return []
             strategies_to_check = [self.strategies[filter_protocol]]
         
+        if len(strategies_to_check) > 1:
+            logger.debug(f"[PARALLEL] Checking {len(strategies_to_check)} protocols in parallel for {user_address[:8]}...")
+        
         # Run all protocol checks in parallel
         async def fetch_positions(strategy):
             try:
+                protocol_start = time()
                 # Run synchronous get_positions in thread pool
                 positions = await asyncio.to_thread(strategy.get_positions, user_address)
+                elapsed = time() - protocol_start
+                logger.debug(f"[PARALLEL] {strategy.get_name()} completed in {elapsed:.2f}s ({len(positions)} positions)")
                 return positions
             except Exception as e:
                 logger.error(f"Error fetching positions from {strategy.get_name()}: {e}", exc_info=True)

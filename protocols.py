@@ -655,77 +655,51 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
         
         # Use getAccountEnabledVaultsInfo - this returns all vaults with positions
         try:
-            logger.info(f"Calling getAccountEnabledVaultsInfo with EVC={evc_addr}, account={address_checksum}")
             result = account_lens_contract.functions.getAccountEnabledVaultsInfo(
                 w3.to_checksum_address(evc_addr),
                 address_checksum
             ).call()
             
-            logger.debug(f"Raw result type: {type(result)}, length: {len(result) if hasattr(result, '__len__') else 'N/A'}")
-            logger.debug(f"Result repr: {repr(result)[:500]}")
-            
             # Result structure: (evcAccountInfo, vaultAccountInfo[], accountRewardInfo[])
-            # Web3.py returns tuples, so we access by index
             evc_account_info = result[0]
             vault_account_info_list = result[1]
-            account_reward_info_list = result[2]
             
-            logger.info(f"Found {len(vault_account_info_list)} vault account infos for {address}")
-            logger.debug(f"EVC account info: {evc_account_info}")
-            logger.debug(f"Vault account info list length: {len(vault_account_info_list) if vault_account_info_list else 0}")
-            
-            if not vault_account_info_list:
-                logger.warning(f"No vault account infos returned for {address}. EVC account info: {evc_account_info}")
-                # Check if account has enabled collaterals/controllers
-                if hasattr(evc_account_info, '__len__') and len(evc_account_info) > 8:
-                    enabled_collaterals = evc_account_info[8] if len(evc_account_info) > 8 else []
-                    enabled_controllers = evc_account_info[9] if len(evc_account_info) > 9 else []
-                    logger.info(f"Account enabled collaterals: {enabled_collaterals}")
-                    logger.info(f"Account enabled controllers: {enabled_controllers}")
-                # Don't return early - continue to check isolated vaults
+            if vault_account_info_list:
+                logger.debug(f"Found {len(vault_account_info_list)} EVC-enabled vault positions for {address}")
             
             for idx, vault_info in enumerate(vault_account_info_list):
                 try:
-                    logger.debug(f"Processing vault_info[{idx}], type: {type(vault_info)}, length: {len(vault_info) if hasattr(vault_info, '__len__') else 'N/A'}")
-                    
-                    # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, 
-                    #                      assetAllowanceVault, assetAllowanceVaultPermit2, assetAllowanceExpirationVaultPermit2,
-                    #                      assetAllowancePermit2, balanceForwarderEnabled, isController, isCollateral, liquidityInfo)
-                    # Based on AccountLens ABI: VaultAccountInfo has 16 fields, liquidityInfo is last
+                    # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
                     vault_address = vault_info[2]  # vault address (index 2)
                     borrowed = vault_info[7]  # borrowed amount (index 7)
                     
-                    logger.debug(f"Vault {vault_address}: borrowed={borrowed}")
-                    
                     # Skip if no debt (supply-only position)
                     if borrowed == 0:
-                        logger.debug(f"Skipping vault {vault_address}: no debt (supply-only)")
                         continue
                     
-                    # Get liquidity info (last element in vault_info tuple, index 15)
-                    liquidity_info = vault_info[15] if len(vault_info) > 15 else vault_info[-1]  # AccountLiquidityInfo struct
-                    logger.debug(f"Liquidity info type: {type(liquidity_info)}, length: {len(liquidity_info) if hasattr(liquidity_info, '__len__') else 'N/A'}")
-                    
-                    # liquidity_info structure: (queryFailure, queryFailureReason, account, vault, unitOfAccount, 
-                    #                            timeToLiquidation, liabilityValueBorrowing, liabilityValueLiquidation,
-                    #                            collateralValueBorrowing, collateralValueLiquidation, collateralValueRaw, ...)
+                    # Get liquidity info (last element, index 15)
+                    liquidity_info = vault_info[15] if len(vault_info) > 15 else vault_info[-1]
                     query_failure = liquidity_info[0]
                     if query_failure:
-                        logger.debug(f"Query failure for vault {vault_address}: {liquidity_info[1]}")
                         continue
                     
-                    liability_value_borrowing = liquidity_info[6]  # debt value
-                    collateral_value_borrowing = liquidity_info[8]  # collateral value
+                    # Extract liquidity values
+                    liability_value_liquidation = liquidity_info[7] if len(liquidity_info) > 7 else 0
+                    collateral_value_liquidation = liquidity_info[9] if len(liquidity_info) > 9 else 0
+                    liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0
+                    collateral_value_borrowing = liquidity_info[8] if len(liquidity_info) > 8 else 0
                     
                     # Convert from 18 decimals to USD
                     debt_usd = liability_value_borrowing / 1e18
                     collateral_usd = collateral_value_borrowing / 1e18
                     
-                    # Calculate health factor: collateral / debt
-                    if debt_usd > 0:
+                    # Calculate health factor (health score)
+                    if liability_value_liquidation > 0:
+                        health_factor = collateral_value_liquidation / liability_value_liquidation
+                    elif debt_usd > 0:
                         health_factor = collateral_usd / debt_usd
                     else:
-                        continue  # Skip if no debt
+                        continue
                     
                     # Filter invalid positions
                     if health_factor > 1e10:
@@ -737,18 +711,11 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                         'collateral_usd': collateral_usd,
                         'debt_usd': debt_usd
                     })
-                    logger.info(f"Found Euler vault: {vault_address}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
+                    logger.info(f"Found EVC-enabled Euler vault: {vault_address}, hf={health_factor:.3f}")
                     
                 except Exception as e_vault:
                     logger.debug(f"Error processing vault info: {e_vault}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
                     continue
-            
-            if vaults:
-                logger.info(f"Found {len(vaults)} Euler vault positions for {address}")
-            else:
-                logger.info(f"No valid Euler positions found for {address} (checked {len(vault_account_info_list)} vaults)")
                 
         except Exception as e:
             logger.error(f"Error calling getAccountEnabledVaultsInfo: {e}")
@@ -776,7 +743,7 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 sub_account = get_euler_sub_account(address, account_id)
                 accounts_to_check.append(w3.to_checksum_address(sub_account))
         
-        logger.info(f"Checking {len(vaults_to_check)} isolated vaults across {len(accounts_to_check)} accounts (main + sub-accounts 0-10) for {address}")
+        logger.debug(f"Checking {len(vaults_to_check)} isolated vaults across {len(accounts_to_check)} accounts (main + sub-accounts 0-10) for {address}")
         
         for vault_address in vaults_to_check:
             vault_address_checksum = w3.to_checksum_address(vault_address)
@@ -787,103 +754,94 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 account_label = f"Sub-account {account_id}" if account_id > 0 else "Main account"
                 
                 try:
-                    logger.debug(f"[{account_label}] Checking vault {vault_address_checksum[:10]}... using getAccountInfo for {account_addr[:10]}...")
-                    
                     # Use getAccountInfo for this specific vault and account
                     try:
                         account_info = account_lens_contract.functions.getAccountInfo(
                             account_addr,
                             vault_address_checksum
                         ).call()
-                        logger.debug(f"[{account_label}] getAccountInfo succeeded for vault {vault_address_checksum[:10]}...")
                     except Exception as e_call:
-                        if account_id == 0:  # Only log errors for main account to reduce noise
-                            logger.debug(f"[{account_label}] getAccountInfo failed for vault {vault_address_checksum}: {e_call}")
+                        continue  # Skip silently - vault might not exist or no position
+                    
+                    # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
+                    vault_account_info = account_info[1]  # VaultAccountInfo struct
+                    
+                    # Check if user has a position (borrowed > 0 or shares > 0)
+                    # VaultAccountInfo structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
+                    borrowed = vault_account_info[7] if len(vault_account_info) > 7 else 0  # borrowed amount
+                    shares = vault_account_info[5] if len(vault_account_info) > 5 else 0  # shares
+                    assets_account = vault_account_info[4] if len(vault_account_info) > 4 else 0  # assetsAccount
+                    
+                    # Skip if no position
+                    if borrowed == 0 and shares == 0 and assets_account == 0:
+                        continue  # No position on this sub-account
+                    
+                    # Get liquidity info (last element, index 15)
+                    liquidity_info = vault_account_info[15] if len(vault_account_info) > 15 else vault_account_info[-1]
+                    query_failure = liquidity_info[0]
+                    
+                    # If liquidity query failed, try calling getAccountLiquidityInfo directly
+                    if query_failure:
+                        try:
+                            direct_liquidity_info = account_lens_contract.functions.getAccountLiquidityInfo(
+                                account_addr,
+                                vault_address_checksum
+                            ).call()
+                            if not direct_liquidity_info[0]:  # If no failure
+                                liquidity_info = direct_liquidity_info
+                                query_failure = False
+                            else:
+                                continue  # Still failed, skip this account
+                        except Exception as e_liquidity:
+                            continue  # Skip on error
+                    
+                    # Skip if no debt (supply-only position) - but only if we have valid liquidity info
+                    if borrowed == 0:
+                        # Check if there's actually debt from liquidity info
+                        liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0
+                        if liability_value_borrowing == 0:
+                            continue  # Supply-only position, skip
+                    
+                    # Extract values from liquidityInfo
+                    # Health score = collateralValueLiquidation / liabilityValueLiquidation
+                    liability_value_liquidation = liquidity_info[7] if len(liquidity_info) > 7 else 0  # liabilityValueLiquidation
+                    collateral_value_liquidation = liquidity_info[9] if len(liquidity_info) > 9 else 0  # collateralValueLiquidation
+                    
+                    # Also get borrowing values for display
+                    liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0  # liabilityValueBorrowing
+                    collateral_value_borrowing = liquidity_info[8] if len(liquidity_info) > 8 else 0  # collateralValueBorrowing
+                    
+                    # Convert from 18 decimals to USD
+                    debt_usd = liability_value_borrowing / 1e18
+                    collateral_usd = collateral_value_borrowing / 1e18
+                    
+                    # Calculate health factor (health score)
+                    if liability_value_liquidation > 0:
+                        health_factor = collateral_value_liquidation / liability_value_liquidation
+                    elif debt_usd > 0:
+                        # Fallback to borrowing values if liquidation values unavailable
+                        health_factor = collateral_usd / debt_usd
+                    else:
                         continue
-                
-                        # account_info structure: (evcAccountInfo, vaultAccountInfo, accountRewardInfo)
-                        vault_account_info = account_info[1]  # VaultAccountInfo struct
-                        
-                        # Check if user has a position (borrowed > 0 or shares > 0)
-                        # VaultAccountInfo structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
-                        borrowed = vault_account_info[7] if len(vault_account_info) > 7 else 0  # borrowed amount
-                        shares = vault_account_info[5] if len(vault_account_info) > 5 else 0  # shares
-                        assets_account = vault_account_info[4] if len(vault_account_info) > 4 else 0  # assetsAccount
-                        
-                        # Skip if no position
-                        if borrowed == 0 and shares == 0 and assets_account == 0:
-                            continue  # No position on this sub-account
-                
-                        # Get liquidity info (last element, index 15)
-                        liquidity_info = vault_account_info[15] if len(vault_account_info) > 15 else vault_account_info[-1]
-                        query_failure = liquidity_info[0]
-                        
-                        # If liquidity query failed, try calling getAccountLiquidityInfo directly
-                        if query_failure:
-                            try:
-                                direct_liquidity_info = account_lens_contract.functions.getAccountLiquidityInfo(
-                                    account_addr,
-                                    vault_address_checksum
-                                ).call()
-                                if not direct_liquidity_info[0]:  # If no failure
-                                    liquidity_info = direct_liquidity_info
-                                    query_failure = False
-                                else:
-                                    if account_id == 0:  # Only log for main account
-                                        logger.debug(f"Liquidity query failed for isolated vault {vault_address_checksum}: {direct_liquidity_info[1]}")
-                                    continue
-                            except Exception as e_liquidity:
-                                if account_id == 0:  # Only log for main account
-                                    logger.debug(f"Error calling getAccountLiquidityInfo: {e_liquidity}")
-                                continue
-                
-                        # Skip if no debt (supply-only position) - but only if we have valid liquidity info
-                        if borrowed == 0:
-                            # Check if there's actually debt from liquidity info
-                            liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0
-                            if liability_value_borrowing == 0:
-                                continue  # Supply-only position, skip
-                        
-                        # Extract values from liquidityInfo
-                        # Health score = collateralValueLiquidation / liabilityValueLiquidation
-                        liability_value_liquidation = liquidity_info[7] if len(liquidity_info) > 7 else 0  # liabilityValueLiquidation
-                        collateral_value_liquidation = liquidity_info[9] if len(liquidity_info) > 9 else 0  # collateralValueLiquidation
-                        
-                        # Also get borrowing values for display
-                        liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0  # liabilityValueBorrowing
-                        collateral_value_borrowing = liquidity_info[8] if len(liquidity_info) > 8 else 0  # collateralValueBorrowing
-                        
-                        # Convert from 18 decimals to USD
-                        debt_usd = liability_value_borrowing / 1e18
-                        collateral_usd = collateral_value_borrowing / 1e18
-                        
-                        # Calculate health factor (health score)
-                        if liability_value_liquidation > 0:
-                            health_factor = collateral_value_liquidation / liability_value_liquidation
-                        elif debt_usd > 0:
-                            # Fallback to borrowing values if liquidation values unavailable
-                            health_factor = collateral_usd / debt_usd
-                        else:
-                            continue
-                        
-                        # Filter invalid positions
-                        if health_factor > 1e10:
-                            continue
-                        
-                        # Check if we already found this vault from getAccountEnabledVaultsInfo or another sub-account
-                        vault_address_lower = vault_address_checksum.lower()
-                        if not any(v['vault_address'].lower() == vault_address_lower for v in vaults):
-                            vaults.append({
-                                'vault_address': vault_address_checksum,
-                                'health_factor': float(health_factor),
-                                'collateral_usd': collateral_usd,
-                                'debt_usd': debt_usd,
-                                'sub_account_id': account_id,
-                                'sub_account_address': account_addr
-                            })
-                            logger.info(f"Found isolated Euler vault on {account_label}: {vault_address_checksum}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
-                            break  # Found position, move to next vault
-                        
+                    
+                    # Filter invalid positions
+                    if health_factor > 1e10:
+                        continue
+                    
+                    # Check if we already found this vault from getAccountEnabledVaultsInfo or another sub-account
+                    vault_address_lower = vault_address_checksum.lower()
+                    if not any(v['vault_address'].lower() == vault_address_lower for v in vaults):
+                        vaults.append({
+                            'vault_address': vault_address_checksum,
+                            'health_factor': float(health_factor),
+                            'collateral_usd': collateral_usd,
+                            'debt_usd': debt_usd,
+                            'sub_account_id': account_id,
+                            'sub_account_address': account_addr
+                        })
+                        logger.info(f"Found isolated Euler vault on {account_label}: {vault_address_checksum}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
+                        break  # Found position, move to next vault
+                    
                 except Exception as e_vault:
                     if account_id == 0:  # Only log errors for main account
                         logger.debug(f"Error checking isolated vault {vault_address} on {account_label}: {e_vault}")

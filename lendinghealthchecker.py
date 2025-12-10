@@ -1423,7 +1423,9 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     - /check <address> - Check all protocols for specific address
     """
     chat_id = str(update.effective_chat.id)
-    logger.info(f"/check called by chat_id: {chat_id}, args: {context.args}")
+    check_start_time = time.time()
+    address_arg = context.args[0] if context.args and len(context.args) > 0 else "all"
+    logger.info(f"[CONCURRENT] /check STARTED by chat_id: {chat_id}, address: {address_arg}")
     
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         logger.info(f"[{INSTANCE_ID}] No addresses found for chat_id {chat_id}, user_data: {user_data.get(chat_id, {})}")
@@ -1493,8 +1495,9 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.debug(f"Could not delete checking message: {e}")
     
     # Send single consolidated message
+    check_elapsed = time.time() - check_start_time
     if final_message:
-        logger.info(f"Sending /check response from instance {INSTANCE_ID}, chat_id: {chat_id}")
+        logger.info(f"[CONCURRENT] /check COMPLETED by chat_id: {chat_id}, address: {address_arg} in {check_elapsed:.2f}s")
         await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)
     else:
         filter_msg = ""
@@ -1502,6 +1505,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             filter_msg = f" for {PROTOCOL_CONFIG[filter_protocol]['name']}"
         elif filter_address:
             filter_msg = f" for {filter_address}"
+        logger.info(f"[CONCURRENT] /check COMPLETED (no positions) by chat_id: {chat_id}, address: {address_arg} in {check_elapsed:.2f}s")
         await update.message.reply_text(f"No active positions found{filter_msg}.")
 
 # Function to handle /position command (full details with collateral/debt)
@@ -1834,7 +1838,8 @@ def main() -> None:
             logger.error(f"Failed to connect to {protocol_info['name']} blockchain: {e}")
             # Don't return - continue with other protocols
 
-    application = Application.builder().token(TOKEN).build()
+    # Enable concurrent updates to handle multiple requests from same user in parallel
+    application = Application.builder().token(TOKEN).concurrent_updates(True).build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))

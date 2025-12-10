@@ -61,3 +61,5 @@ Thumbs.db
 # PM2 (keep ecosystem.config.js as it's useful for deployment)
 # ecosystem.config.js
 
+rebalancing.py
+bot.log 

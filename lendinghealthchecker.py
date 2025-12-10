@@ -481,13 +481,17 @@ async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_id = str(update.effective_chat.id)
     
     # Parse arguments
-    if len(context.args) < 2:
+    DEFAULT_THRESHOLD = 1.5
+    
+    if len(context.args) < 1:
         await update.message.reply_text(
             "Usage:\n"
+            "  /add <address> - Add address with default threshold (1.5)\n"
             "  /add <address> <threshold> - Set global threshold for all protocols\n"
             "  /add <address> <threshold> <protocol> - Set threshold for specific protocol\n"
             "  /add <address> <threshold> <protocol> <market> - Set threshold for specific market\n\n"
             "Examples:\n"
+            "  /add 0x1234...\n"
             "  /add 0x1234... 1.5\n"
             "  /add 0x1234... 1.3 morpho\n"
             "  /add 0x1234... 1.2 morpho 0xMarketID\n"
@@ -497,18 +501,27 @@ async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     address = context.args[0].lower()
-    threshold_str = context.args[1]
-    protocol_id = context.args[2].lower() if len(context.args) >= 3 else None
-    market_id = context.args[3].lower() if len(context.args) >= 4 else None
     
-    # Validate threshold
-    try:
-        threshold = float(threshold_str)
-        if threshold <= 0:
-            raise ValueError("Threshold must be positive")
-    except ValueError:
-        await update.message.reply_text("Invalid threshold. Please enter a positive number (e.g., 1.5).")
-        return
+    # If threshold not provided, use default
+    if len(context.args) >= 2:
+        threshold_str = context.args[1]
+        # Validate threshold
+        try:
+            threshold = float(threshold_str)
+            if threshold <= 0:
+                raise ValueError("Threshold must be positive")
+        except ValueError:
+            await update.message.reply_text("Invalid threshold. Please enter a positive number (e.g., 1.5).")
+            return
+        protocol_id = context.args[2].lower() if len(context.args) >= 3 else None
+        market_id = context.args[3].lower() if len(context.args) >= 4 else None
+        use_default = False
+    else:
+        # Use default threshold
+        threshold = DEFAULT_THRESHOLD
+        protocol_id = None
+        market_id = None
+        use_default = True
     
     # Validate address (use any protocol's Web3 instance)
     if not protocol_connections:
@@ -585,7 +598,10 @@ async def add_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         # Global threshold
         address_data['default_threshold'] = threshold
-        message = f"✅ Set global threshold {threshold} for {address} (applies to all protocols)"
+        if use_default:
+            message = f"✅ Added {address} with default threshold {threshold} (applies to all protocols)\n\nℹ️ Default health factor threshold: {threshold}"
+        else:
+            message = f"✅ Set global threshold {threshold} for {address} (applies to all protocols)"
     
     save_user_data(user_data)
     

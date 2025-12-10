@@ -10,6 +10,7 @@ __pycache__/
 .env
 .env.local
 .env.*
+!.env.example
 
 # User data (production data should not be committed)
 *.json

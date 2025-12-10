@@ -17,6 +17,11 @@ __pycache__/
 !package-lock.json
 !abis/*.json
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
 # Test files
 *test*.py
 curvancetest.py
@@ -26,8 +31,21 @@ test_*.py
 *.log
 bot.log
 
-# Deployment scripts (keep main ones, exclude test scripts)
+# Deployment scripts (server-specific, should not be committed)
+deploy.sh
+deploy-auto.sh
+deploy-with-password.sh
+setup-server.sh
+setup-passwordless-ssh.sh
+restore-user-data.sh
 test-bot.sh
+
+# Server configuration files (contain server-specific paths/credentials)
+ecosystem.config.js
+README_DEPLOYMENT.md
+
+# Example files that might contain sensitive patterns
+signed_transaction_example.py
 
 # IDE
 .vscode/

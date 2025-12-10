@@ -8,11 +8,33 @@ import logging
 import requests
 from typing import Optional, List, Dict
 from web3 import Web3
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
 # Morpho GraphQL API endpoint
 MORPHO_GRAPHQL_URL = "https://api.morpho.org/graphql"
+
+# Rate limiting for GraphQL API (thread-safe)
+# Max 5 concurrent requests, with minimum 200ms between requests
+_graphql_lock = threading.Lock()
+_graphql_last_call_time = 0
+_graphql_min_interval = 0.2  # 200ms between requests (5 requests/second max)
+
+def _rate_limited_graphql_request(*args, **kwargs):
+    """Make a GraphQL request with rate limiting."""
+    global _graphql_last_call_time
+    
+    with _graphql_lock:
+        # Wait if needed to respect rate limit
+        elapsed = time.time() - _graphql_last_call_time
+        if elapsed < _graphql_min_interval:
+            time.sleep(_graphql_min_interval - elapsed)
+        _graphql_last_call_time = time.time()
+        
+        # Make the actual request
+        return requests.post(*args, **kwargs)
 
 # Cache for LLTV values (immutable per market, so cache indefinitely)
 _lltv_cache = {}
@@ -974,7 +996,8 @@ def get_morpho_user_vaults(address: str, chain_id: int = 143) -> List[Dict]:
             "chainId": chain_id
         }
         
-        response = requests.post(
+        # Use rate-limited GraphQL request
+        response = _rate_limited_graphql_request(
             MORPHO_GRAPHQL_URL,
             json={"query": query, "variables": variables},
             headers={"Content-Type": "application/json"},
@@ -1230,7 +1253,8 @@ def get_morpho_user_markets(address: str, chain_id: int = 143) -> List[Dict]:
             "chainId": chain_id
         }
         
-        response = requests.post(
+        # Use rate-limited GraphQL request
+        response = _rate_limited_graphql_request(
             MORPHO_GRAPHQL_URL,
             json={"query": query, "variables": variables},
             headers={"Content-Type": "application/json"},

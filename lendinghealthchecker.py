@@ -12,6 +12,8 @@ import protocols
 import rebalancing
 from protocol_strategy import ProtocolManager, PositionData
 from protocol_strategies_impl import NeverlandStrategy, MorphoStrategy, CurvanceStrategy, EulerStrategy
+import sqlite3
+from contextlib import contextmanager
 
 # Unique instance identifier to track duplicate instances
 import socket
@@ -96,7 +98,20 @@ DEFAULT_PROTOCOL = 'neverland'
 # Load configuration from environment variables
 TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 USER_DATA_FILE = os.environ.get('USER_DATA_FILE', 'lendinghealthchatids.json')
+DATABASE_FILE = os.environ.get('DATABASE_FILE', 'bot.db')
 CHECK_INTERVAL = int(os.environ.get('CHECK_INTERVAL', 3600))  # Default to 1 hour
+
+# Rate limiting semaphores
+# RPC calls: max 10 concurrent requests per protocol
+RPC_RATE_LIMIT = int(os.environ.get('RPC_RATE_LIMIT', 10))
+# GraphQL API: max 5 concurrent requests
+GRAPHQL_RATE_LIMIT = int(os.environ.get('GRAPHQL_RATE_LIMIT', 5))
+# User processing: max 10 concurrent users
+USER_PROCESSING_LIMIT = int(os.environ.get('USER_PROCESSING_LIMIT', 10))
+
+rpc_semaphore = asyncio.Semaphore(RPC_RATE_LIMIT)
+graphql_semaphore = asyncio.Semaphore(GRAPHQL_RATE_LIMIT)
+user_processing_semaphore = asyncio.Semaphore(USER_PROCESSING_LIMIT)
 
 # Initialize Web3 connections for each protocol (kept for backward compatibility)
 protocol_connections = {}
@@ -164,65 +179,92 @@ print("\nSupported Protocols:")
 for protocol_id, protocol_info in PROTOCOL_CONFIG.items():
     print(f"  - {protocol_info['name']} ({protocol_id}) on {protocol_info['chain']}")
 
-# Load user data from file
-def load_user_data():
+# Database setup
+def init_database():
+    """Initialize SQLite database with schema."""
+    with get_db() as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS user_data (
+                chat_id TEXT NOT NULL,
+                address TEXT NOT NULL,
+                data TEXT NOT NULL,
+                PRIMARY KEY (chat_id, address)
+            )
+        ''')
+        conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_chat_id ON user_data(chat_id)
+        ''')
+        conn.execute('''
+            CREATE INDEX IF NOT EXISTS idx_address ON user_data(address)
+        ''')
+
+@contextmanager
+def get_db():
+    """Get database connection with automatic commit/rollback."""
+    conn = sqlite3.connect(DATABASE_FILE)
+    conn.row_factory = sqlite3.Row
     try:
-        with open(USER_DATA_FILE, 'r') as f:
-            content = f.read().strip()
-            if content:
-                data = json.loads(content)
-                # Migrate old format to new format
-                migrated = migrate_user_data(data)
-                # Save migrated data if migration occurred
-                if migrated != data:
-                    with open(USER_DATA_FILE, 'w') as f:
-                        json.dump(migrated, f)
-                return migrated
-            else:
-                return {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
-# Migrate old data format to new format (supports multiple addresses)
-def migrate_user_data(data):
-    """
-    Migrate old data format to new hierarchical format.
-    Preserves new format data, migrates old format if needed.
-    """
-    if not data:
+def load_user_data():
+    """Load user data from database."""
+    data = {}
+    try:
+        with get_db() as conn:
+            cursor = conn.execute('SELECT chat_id, address, data FROM user_data')
+            for row in cursor:
+                chat_id = row['chat_id']
+                address = row['address']
+                user_info = json.loads(row['data'])
+                
+                if chat_id not in data:
+                    data[chat_id] = {'addresses': {}}
+                data[chat_id]['addresses'][address] = user_info
+    except sqlite3.OperationalError as e:
+        # Table doesn't exist yet, initialize it
+        if 'no such table' in str(e).lower():
+            logger.info("Database table doesn't exist, initializing...")
+            init_database()
+            return {}
+        raise
+    except Exception as e:
+        logger.error(f"Error loading user data from database: {e}")
         return {}
     
-    migrated = {}
-    for chat_id, user_info in data.items():
-        # Check if it's already new format (has 'addresses' key with dict structure)
-        if 'addresses' in user_info and isinstance(user_info['addresses'], dict):
-            # Already new format - preserve it
-            migrated[chat_id] = user_info
-        elif 'address' in user_info:
-            # Old format: {'threshold': 1.5, 'address': '0x...'}
-            # Convert to new format
-            threshold = user_info.get('threshold', 1.5)
-            address = user_info['address']
-            migrated[chat_id] = {
-                'addresses': {
-                    address: {
-                        'default_threshold': threshold,
-                        'protocols': {}
-                    }
-                }
-            }
-        else:
-            # Unknown format - preserve as-is to avoid data loss
-            migrated[chat_id] = user_info
-    
-    return migrated
+    return data
 
-# Save user data to file
 def save_user_data(data):
-    with open(USER_DATA_FILE, 'w') as f:
-        json.dump(data, f)
+    """Save user data to database."""
+    try:
+        with get_db() as conn:
+            # Clear existing data for all chat_ids that are in the new data
+            chat_ids = list(data.keys())
+            if chat_ids:
+                placeholders = ','.join(['?'] * len(chat_ids))
+                conn.execute(f'DELETE FROM user_data WHERE chat_id IN ({placeholders})', chat_ids)
+            
+            # Insert new data
+            for chat_id, user_info in data.items():
+                addresses = user_info.get('addresses', {})
+                for address, address_data in addresses.items():
+                    conn.execute(
+                        'INSERT OR REPLACE INTO user_data (chat_id, address, data) VALUES (?, ?, ?)',
+                        (chat_id, address, json.dumps(address_data))
+                    )
+    except Exception as e:
+        logger.error(f"Error saving user data to database: {e}")
+        raise
 
-# Global variable to store user data
+# Initialize database on startup
+init_database()
+
+# Global variable to store user data (loaded from database)
 user_data = load_user_data()
 
 # Cache for API calls (30 second TTL to balance accuracy vs API calls)
@@ -686,6 +728,7 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
     """
     Auto-discover all active positions for an address across all protocols.
     Uses Strategy Pattern - no more if/else spaghetti!
+    Now with parallel protocol checking for better performance.
     
     Args:
         address: Wallet address to check
@@ -698,9 +741,10 @@ async def discover_all_positions(address: str, chat_id: str, filter_protocol: Op
     positions = []
     address_data = user_data[chat_id].get('addresses', {}).get(address, {})
     
-    # Use ProtocolManager to get all positions (clean, no if/else!)
+    # Use ProtocolManager to get all positions in parallel (clean, no if/else!)
     try:
-        position_data_list = protocol_manager.get_all_positions(address, filter_protocol)
+        # Run protocol checks in parallel using asyncio.to_thread
+        position_data_list = await protocol_manager.get_all_positions_async(address, filter_protocol)
         
         for pos_data in position_data_list:
             # Skip invalid positions
@@ -1745,8 +1789,22 @@ async def check_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: str) -> 
 
 # Function to periodically check health factors
 async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
-    for chat_id in user_data:
-        await check_and_notify(context, chat_id)
+    """
+    Process all users in parallel with concurrency limit.
+    This prevents server overload during volatile periods.
+    """
+    chat_ids = list(user_data.keys())
+    
+    if not chat_ids:
+        return
+    
+    async def check_user(chat_id: str):
+        """Check a single user with semaphore limit."""
+        async with user_processing_semaphore:
+            await check_and_notify(context, chat_id)
+    
+    # Process all users in parallel (limited by semaphore)
+    await asyncio.gather(*[check_user(chat_id) for chat_id in chat_ids], return_exceptions=True)
 
 def main() -> None:
     if not TOKEN:

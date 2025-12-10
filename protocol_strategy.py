@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 from web3 import Web3
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class ProtocolManager:
     
     def get_all_positions(self, user_address: str, filter_protocol: Optional[str] = None) -> List[PositionData]:
         """
-        Get all positions across all registered protocols.
+        Get all positions across all registered protocols (synchronous version).
         
         Args:
             user_address: User's wallet address
@@ -119,6 +120,47 @@ class ProtocolManager:
                 all_positions.extend(positions)
             except Exception as e:
                 logger.error(f"Error fetching positions from {strategy.get_name()}: {e}", exc_info=True)
+        
+        return all_positions
+    
+    async def get_all_positions_async(self, user_address: str, filter_protocol: Optional[str] = None) -> List[PositionData]:
+        """
+        Get all positions across all registered protocols in parallel (async version).
+        
+        Args:
+            user_address: User's wallet address
+            filter_protocol: Optional protocol ID to filter results
+            
+        Returns:
+            List of PositionData objects from all protocols
+        """
+        strategies_to_check = list(self.strategies.values())
+        if filter_protocol:
+            if filter_protocol not in self.strategies:
+                logger.warning(f"Unknown protocol filter: {filter_protocol}")
+                return []
+            strategies_to_check = [self.strategies[filter_protocol]]
+        
+        # Run all protocol checks in parallel
+        async def fetch_positions(strategy):
+            try:
+                # Run synchronous get_positions in thread pool
+                positions = await asyncio.to_thread(strategy.get_positions, user_address)
+                return positions
+            except Exception as e:
+                logger.error(f"Error fetching positions from {strategy.get_name()}: {e}", exc_info=True)
+                return []
+        
+        # Execute all protocol checks concurrently
+        results = await asyncio.gather(*[fetch_positions(strategy) for strategy in strategies_to_check], return_exceptions=True)
+        
+        # Flatten results and filter out exceptions
+        all_positions = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Protocol check failed with exception: {result}")
+                continue
+            all_positions.extend(result)
         
         return all_positions
     

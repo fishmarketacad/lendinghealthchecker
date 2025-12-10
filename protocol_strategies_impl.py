@@ -859,31 +859,51 @@ class EulerStrategy(LendingProtocolStrategy):
                 hf = vault.get('health_factor')
                 collateral_usd = vault.get('collateral_usd', 0)
                 debt_usd = vault.get('debt_usd', 0)
+                collateral_symbol = vault.get('collateral_symbol', '?')
+                debt_symbol = vault.get('debt_symbol', '?')
+                collateral_amount = vault.get('collateral_amount', 0)
+                debt_amount = vault.get('debt_amount', 0)
                 
                 # Skip invalid positions
                 if not hf or float(hf) > 1e10 or debt_usd == 0:
                     continue
                 
-                # Euler vaults don't have token symbols easily accessible
-                # Use vault address short form as identifier
-                vault_short = vault_address[:6] + '...' + vault_address[-4:] if len(vault_address) > 10 else vault_address
+                # Create market name from token symbols (similar to Morpho)
+                if collateral_symbol != '?' and debt_symbol != '?':
+                    market_name = f"{collateral_symbol}-{debt_symbol}"
+                else:
+                    # Fallback to vault address short form
+                    vault_short = vault_address[:6] + '...' + vault_address[-4:] if len(vault_address) > 10 else vault_address
+                    market_name = f"Euler Vault ({vault_short})"
+                
+                # Get decimals (default to 18 if not available)
+                collateral_decimals = 18
+                debt_decimals = 18
+                if collateral_symbol != '?':
+                    try:
+                        # Try to get decimals from token contract
+                        from protocols import get_token_decimals
+                        # We'd need the collateral address, but for now use default
+                        collateral_decimals = 18
+                    except:
+                        pass
                 
                 positions.append(PositionData(
                     protocol_name="Euler",
-                    market_name=f"Euler Vault ({vault_short})",
+                    market_name=market_name,
                     market_id=vault_address.lower(),
                     health_factor=float(hf),
                     collateral=Asset(
-                        symbol="?",  # Token symbol not easily available from vault
-                        amount=0,  # Amount not easily available without token decimals
+                        symbol=collateral_symbol,
+                        amount=float(collateral_amount),
                         usd_value=collateral_usd,
-                        decimals=18
+                        decimals=collateral_decimals
                     ),
                     debt=Asset(
-                        symbol="?",  # Token symbol not easily available from vault
-                        amount=0,  # Amount not easily available without token decimals
+                        symbol=debt_symbol,
+                        amount=float(debt_amount),
                         usd_value=debt_usd,
-                        decimals=18
+                        decimals=debt_decimals
                     ),
                     app_url=self.app_url
                 ))

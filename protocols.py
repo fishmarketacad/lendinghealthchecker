@@ -671,6 +671,8 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                 try:
                     # vault_info structure: (timestamp, account, vault, asset, assetsAccount, shares, assets, borrowed, ...)
                     vault_address = vault_info[2]  # vault address (index 2)
+                    asset_address = vault_info[3] if len(vault_info) > 3 else None  # asset (token being borrowed)
+                    assets_account = vault_info[4] if len(vault_info) > 4 else 0  # assetsAccount (deposited collateral)
                     borrowed = vault_info[7]  # borrowed amount (index 7)
                     
                     # Skip if no debt (supply-only position)
@@ -688,6 +690,47 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                     collateral_value_liquidation = liquidity_info[9] if len(liquidity_info) > 9 else 0
                     liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0
                     collateral_value_borrowing = liquidity_info[8] if len(liquidity_info) > 8 else 0
+                    
+                    # Extract collateral addresses from liquidityInfo
+                    collateral_addresses = []
+                    collateral_amounts_raw = []
+                    if len(liquidity_info) > 2:
+                        collateral_values_raw = liquidity_info[2] if isinstance(liquidity_info[2], (list, tuple)) else []
+                        for coll_item in collateral_values_raw:
+                            if isinstance(coll_item, (list, tuple)) and len(coll_item) >= 2:
+                                coll_addr = coll_item[0]
+                                coll_value = coll_item[1]
+                                if coll_addr and coll_value > 0:
+                                    collateral_addresses.append(coll_addr)
+                                    collateral_amounts_raw.append(coll_value)
+                    
+                    # Get debt token symbol
+                    debt_symbol = "?"
+                    debt_amount = 0
+                    if asset_address:
+                        try:
+                            token_contract = w3.eth.contract(address=w3.to_checksum_address(asset_address), abi=ERC20_ABI)
+                            debt_symbol = token_contract.functions.symbol().call()
+                            debt_decimals = get_token_decimals(asset_address, w3)
+                            debt_amount = borrowed / (10 ** debt_decimals)
+                        except Exception as e:
+                            logger.debug(f"Error fetching debt token symbol for {asset_address}: {e}")
+                    
+                    # Get collateral token symbol (use first collateral if multiple)
+                    collateral_symbol = "?"
+                    collateral_amount = 0
+                    if collateral_addresses:
+                        try:
+                            first_collateral_addr = collateral_addresses[0]
+                            token_contract = w3.eth.contract(address=w3.to_checksum_address(first_collateral_addr), abi=ERC20_ABI)
+                            collateral_symbol = token_contract.functions.symbol().call()
+                            collateral_decimals = get_token_decimals(first_collateral_addr, w3)
+                            if assets_account > 0:
+                                collateral_amount = assets_account / (10 ** collateral_decimals)
+                            elif collateral_amounts_raw and len(collateral_amounts_raw) > 0:
+                                collateral_amount = collateral_amounts_raw[0] / (10 ** collateral_decimals)
+                        except Exception as e:
+                            logger.debug(f"Error fetching collateral token symbol: {e}")
                     
                     # Convert from 18 decimals to USD
                     debt_usd = liability_value_borrowing / 1e18
@@ -709,9 +752,13 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                         'vault_address': vault_address,
                         'health_factor': health_factor,
                         'collateral_usd': collateral_usd,
-                        'debt_usd': debt_usd
+                        'debt_usd': debt_usd,
+                        'collateral_symbol': collateral_symbol,
+                        'debt_symbol': debt_symbol,
+                        'collateral_amount': collateral_amount,
+                        'debt_amount': debt_amount
                     })
-                    logger.info(f"Found EVC-enabled Euler vault: {vault_address}, hf={health_factor:.3f}")
+                    logger.info(f"Found EVC-enabled Euler vault: {vault_address}, hf={health_factor:.3f}, {collateral_amount:.2f} {collateral_symbol} (${collateral_usd:.2f}) / {debt_amount:.2f} {debt_symbol} (${debt_usd:.2f})")
                     
                 except Exception as e_vault:
                     logger.debug(f"Error processing vault info: {e_vault}")
@@ -811,6 +858,55 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                     liability_value_borrowing = liquidity_info[6] if len(liquidity_info) > 6 else 0  # liabilityValueBorrowing
                     collateral_value_borrowing = liquidity_info[8] if len(liquidity_info) > 8 else 0  # collateralValueBorrowing
                     
+                    # Extract token addresses
+                    # VaultAccountInfo[3] = asset (the token being borrowed)
+                    asset_address = vault_account_info[3] if len(vault_account_info) > 3 else None
+                    
+                    # Extract collateral addresses from liquidityInfo
+                    # liquidityInfo structure: (queryFailure, queryFailureReason, collateralValuesRaw[], collateralValuesBorrowing[], ...)
+                    collateral_addresses = []
+                    collateral_amounts_raw = []
+                    if len(liquidity_info) > 2:
+                        collateral_values_raw = liquidity_info[2] if isinstance(liquidity_info[2], (list, tuple)) else []
+                        # collateralValuesRaw is array of (address, value) tuples
+                        for coll_item in collateral_values_raw:
+                            if isinstance(coll_item, (list, tuple)) and len(coll_item) >= 2:
+                                coll_addr = coll_item[0]
+                                coll_value = coll_item[1]
+                                if coll_addr and coll_value > 0:
+                                    collateral_addresses.append(coll_addr)
+                                    collateral_amounts_raw.append(coll_value)
+                    
+                    # Get debt token symbol
+                    debt_symbol = "?"
+                    debt_amount = 0
+                    if asset_address:
+                        try:
+                            token_contract = w3.eth.contract(address=w3.to_checksum_address(asset_address), abi=ERC20_ABI)
+                            debt_symbol = token_contract.functions.symbol().call()
+                            debt_decimals = get_token_decimals(asset_address, w3)
+                            debt_amount = borrowed / (10 ** debt_decimals)
+                        except Exception as e:
+                            logger.debug(f"Error fetching debt token symbol for {asset_address}: {e}")
+                    
+                    # Get collateral token symbol (use first collateral if multiple)
+                    collateral_symbol = "?"
+                    collateral_amount = 0
+                    if collateral_addresses:
+                        try:
+                            first_collateral_addr = collateral_addresses[0]
+                            token_contract = w3.eth.contract(address=w3.to_checksum_address(first_collateral_addr), abi=ERC20_ABI)
+                            collateral_symbol = token_contract.functions.symbol().call()
+                            collateral_decimals = get_token_decimals(first_collateral_addr, w3)
+                            # Use assetsAccount for collateral amount (deposited assets)
+                            if assets_account > 0:
+                                collateral_amount = assets_account / (10 ** collateral_decimals)
+                            elif collateral_amounts_raw and len(collateral_amounts_raw) > 0:
+                                # Fallback to raw collateral value
+                                collateral_amount = collateral_amounts_raw[0] / (10 ** collateral_decimals)
+                        except Exception as e:
+                            logger.debug(f"Error fetching collateral token symbol: {e}")
+                    
                     # Convert from 18 decimals to USD
                     debt_usd = liability_value_borrowing / 1e18
                     collateral_usd = collateral_value_borrowing / 1e18
@@ -836,10 +932,14 @@ def get_euler_user_vaults(address: str, w3, account_lens_address: str = None, ev
                             'health_factor': float(health_factor),
                             'collateral_usd': collateral_usd,
                             'debt_usd': debt_usd,
+                            'collateral_symbol': collateral_symbol,
+                            'debt_symbol': debt_symbol,
+                            'collateral_amount': collateral_amount,
+                            'debt_amount': debt_amount,
                             'sub_account_id': account_id,
                             'sub_account_address': account_addr
                         })
-                        logger.info(f"Found isolated Euler vault on {account_label}: {vault_address_checksum}, hf={health_factor:.3f}, collateral=${collateral_usd:.2f}, debt=${debt_usd:.2f}")
+                        logger.info(f"Found isolated Euler vault on {account_label}: {vault_address_checksum}, hf={health_factor:.3f}, {collateral_amount:.2f} {collateral_symbol} (${collateral_usd:.2f}) / {debt_amount:.2f} {debt_symbol} (${debt_usd:.2f})")
                         break  # Found position, move to next vault
                     
                 except Exception as e_vault:

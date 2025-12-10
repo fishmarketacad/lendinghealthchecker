@@ -7,7 +7,7 @@ A Telegram bot that monitors health factors for lending positions across multipl
 - **Neverland** - Unified lending protocol ✅
 - **Morpho Blue** - Peer-to-peer lending protocol ✅
 - **Curvance** - Unified lending protocol with aggregate health factors ✅
-- **Euler V2** - Isolated vault lending protocol ⚠️ (Limited support - no subgraph on Monad)
+- **Euler V2** - Isolated vault lending protocol ✅ (Full support with sub-account detection)
 
 ## Features
 
@@ -209,9 +209,11 @@ The bot uses a **Strategy Pattern** to automatically discover positions:
 - Handles packed cToken addresses and zero addresses using fallback identification
 
 #### Euler V2
-- Uses `AccountLens.getAccountEnabledVaultsInfo()` to discover vaults
-- Checks known isolated vaults using `getAccountInfo()`
+- Uses `AccountLens.getAccountEnabledVaultsInfo()` to discover EVC-enabled vaults
+- Checks known isolated vaults using `getAccountInfo()` across main account and sub-accounts (0-10)
+- Supports sub-account positions (positions can be on sub-account 1, 2, etc., not just main account)
 - Each vault is a separate position
+- Health factor calculated as `collateralValueLiquidation / liabilityValueLiquidation`
 
 ### Periodic Monitoring
 

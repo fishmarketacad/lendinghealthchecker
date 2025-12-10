@@ -99,6 +99,34 @@ A health checker bot that:
 
 This works for other protocols (Curvance, Morpho) but not for Euler isolated vaults.
 
+## How We Calculate Health Score
+
+Following the Euler V2 documentation, we calculate health score from the `AccountLiquidityInfo` struct returned by AccountLens:
+
+**Primary Method (Preferred):**
+```
+Health Score = collateralValueLiquidation / liabilityValueLiquidation
+```
+
+**Fallback Method (if liquidation values unavailable):**
+```
+Health Score = collateralValueBorrowing / liabilityValueBorrowing
+```
+
+**Values from AccountLiquidityInfo:**
+- `collateralValueLiquidation`: Total collateral value at liquidation prices (18 decimals, WAD format)
+- `liabilityValueLiquidation`: Total debt value at liquidation prices (18 decimals, WAD format)
+- `collateralValueBorrowing`: Total collateral value at borrowing prices (18 decimals)
+- `liabilityValueBorrowing`: Total debt value at borrowing prices (18 decimals)
+
+**Conversion:**
+- All values are in 18 decimals (WAD), so we divide by `1e18` to get USD values
+- Health score is a ratio, so no conversion needed (already in correct units)
+
+**According to Euler Docs:**
+- Health score should be queried from the **controller vault** (where `isController=true`)
+- This is the vault you borrow from, not the collateral vaults
+
 ## Code Example
 
 Here's what I'm trying to do:
@@ -121,10 +149,14 @@ liquidity_info = account_lens.functions.getAccountLiquidityInfo(
     account, vault
 ).call()
 
-# I need to get:
-# - Health score (collateralValueLiquidation / liabilityValueLiquidation)
-# - Debt value
-# - Collateral value
+# When query succeeds, we calculate:
+if liquidity_info[7] > 0:  # liabilityValueLiquidation > 0
+    health_score = liquidity_info[9] / liquidity_info[7]  # collateralValueLiquidation / liabilityValueLiquidation
+else:
+    health_score = liquidity_info[8] / liquidity_info[6]  # collateralValueBorrowing / liabilityValueBorrowing
+
+debt_usd = liquidity_info[6] / 1e18  # liabilityValueBorrowing
+collateral_usd = liquidity_info[8] / 1e18  # collateralValueBorrowing
 ```
 
 ## Expected Behavior

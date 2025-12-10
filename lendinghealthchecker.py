@@ -159,17 +159,17 @@ protocol_manager.register_strategy(
     )
 )
 
-# Register Euler strategy (disabled - no subgraph on Monad yet)
-# euler_info = PROTOCOL_CONFIG['euler']
-# euler_w3 = Web3(Web3.HTTPProvider(euler_info['rpc_url']))
-# protocol_manager.register_strategy(
-#     EulerStrategy(
-#         euler_w3,
-#         euler_info['account_lens_address'],
-#         euler_info['pool_address'],  # EVC address
-#         euler_info['app_url']
-#     )
-# )
+# Register Euler strategy (now supports sub-accounts for isolated vaults)
+euler_info = PROTOCOL_CONFIG['euler']
+euler_w3 = Web3(Web3.HTTPProvider(euler_info['rpc_url']))
+protocol_manager.register_strategy(
+    EulerStrategy(
+        euler_w3,
+        euler_info['account_lens_address'],
+        euler_info['pool_address'],  # EVC address
+        euler_info['app_url']
+    )
+)
 
 # Debug: Print environment variables
 print("TELEGRAM_BOT_TOKEN:", "SET" if TOKEN else "NOT SET")
@@ -1483,7 +1483,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     await update.message.reply_text(
                         f"Address {arg} is not being monitored.\n"
-                        f"Use /add {arg} <threshold> to start monitoring it."
+                        f"Use /add {arg} to start monitoring it (default threshold: 1.5)."
                     )
                     return
             else:
@@ -1573,7 +1573,7 @@ async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 else:
                     await update.message.reply_text(
                         f"Address {arg} is not being monitored.\n"
-                        f"Use /add {arg} <threshold> to start monitoring it."
+                        f"Use /add {arg} to start monitoring it (default threshold: 1.5)."
                     )
                     return
             else:

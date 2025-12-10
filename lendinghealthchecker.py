@@ -1799,16 +1799,16 @@ async def periodic_check(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     
     start_time = time.time()
-    logger.info(f"[PARALLEL] Starting periodic check for {len(chat_ids)} users")
+    logger.info(f"[PARALLEL] Starting periodic check for {len(chat_ids)} users (max {USER_PROCESSING_LIMIT} concurrent)")
     
     async def check_user(chat_id: str):
         """Check a single user with semaphore limit."""
         user_start = time.time()
         async with user_processing_semaphore:
-            logger.debug(f"[PARALLEL] Processing user {chat_id[:8]}... (concurrent limit: {USER_PROCESSING_LIMIT})")
+            logger.info(f"[PARALLEL] Processing user {chat_id[:8]}...")
             await check_and_notify(context, chat_id)
             elapsed = time.time() - user_start
-            logger.debug(f"[PARALLEL] Completed user {chat_id[:8]}... in {elapsed:.2f}s")
+            logger.info(f"[PARALLEL] Completed user {chat_id[:8]}... in {elapsed:.2f}s")
     
     # Process all users in parallel (limited by semaphore)
     await asyncio.gather(*[check_user(chat_id) for chat_id in chat_ids], return_exceptions=True)

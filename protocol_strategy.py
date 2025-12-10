@@ -142,21 +142,31 @@ class ProtocolManager:
                 return []
             strategies_to_check = [self.strategies[filter_protocol]]
         
+        protocol_start_time = time()
         if len(strategies_to_check) > 1:
-            logger.debug(f"[PARALLEL] Checking {len(strategies_to_check)} protocols in parallel for {user_address[:8]}...")
+            logger.info(f"[PARALLEL] Checking {len(strategies_to_check)} protocols in parallel for {user_address[:8]}...")
         
         # Run all protocol checks in parallel
         async def fetch_positions(strategy):
             try:
                 protocol_start = time()
+                protocol_name = strategy.get_name()
+                logger.info(f"[PARALLEL] Starting {protocol_name} check...")
                 # Run synchronous get_positions in thread pool
                 positions = await asyncio.to_thread(strategy.get_positions, user_address)
                 elapsed = time() - protocol_start
-                logger.debug(f"[PARALLEL] {strategy.get_name()} completed in {elapsed:.2f}s ({len(positions)} positions)")
+                logger.info(f"[PARALLEL] {protocol_name} completed in {elapsed:.2f}s ({len(positions)} positions)")
                 return positions
             except Exception as e:
                 logger.error(f"Error fetching positions from {strategy.get_name()}: {e}", exc_info=True)
                 return []
+        
+        # Execute all protocol checks concurrently
+        results = await asyncio.gather(*[fetch_positions(strategy) for strategy in strategies_to_check], return_exceptions=True)
+        
+        total_protocol_time = time() - protocol_start_time
+        if len(strategies_to_check) > 1:
+            logger.info(f"[PARALLEL] All {len(strategies_to_check)} protocols completed in {total_protocol_time:.2f}s")
         
         # Execute all protocol checks concurrently
         results = await asyncio.gather(*[fetch_positions(strategy) for strategy in strategies_to_check], return_exceptions=True)

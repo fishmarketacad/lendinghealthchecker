@@ -1423,7 +1423,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     - /check <address> - Check all protocols for specific address
     """
     chat_id = str(update.effective_chat.id)
-    check_start_time = time.time()
+    check_start_time = time()
     address_arg = context.args[0] if context.args and len(context.args) > 0 else "all"
     logger.info(f"[CONCURRENT] /check STARTED by chat_id: {chat_id}, address: {address_arg}")
     
@@ -1495,7 +1495,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.debug(f"Could not delete checking message: {e}")
     
     # Send single consolidated message
-    check_elapsed = time.time() - check_start_time
+    check_elapsed = time() - check_start_time
     if final_message:
         logger.info(f"[CONCURRENT] /check COMPLETED by chat_id: {chat_id}, address: {address_arg} in {check_elapsed:.2f}s")
         await update.message.reply_text(final_message, parse_mode='Markdown', disable_web_page_preview=True)

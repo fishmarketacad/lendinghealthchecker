@@ -1855,6 +1855,26 @@ def main() -> None:
     application.add_handler(CommandHandler("monitor", add_address))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_address))
 
+    # Set bot commands menu (appears when users type "/")
+    from telegram import BotCommand
+    async def set_commands(application: Application) -> None:
+        bot_commands = [
+            BotCommand("start", "Start the bot and see welcome message"),
+            BotCommand("add", "Add an address to monitor with threshold"),
+            BotCommand("monitor", "Alias for add command"),
+            BotCommand("list", "List all monitored addresses"),
+            BotCommand("check", "Check positions for all or specific addresses"),
+            BotCommand("position", "Get detailed position information"),
+            BotCommand("remove", "Remove an address from monitoring"),
+            BotCommand("stop", "Stop all monitoring"),
+            BotCommand("protocols", "List supported protocols"),
+            BotCommand("repay", "Calculate repay amount to reach target health"),
+        ]
+        await application.bot.set_my_commands(bot_commands)
+        logger.info("Bot commands menu set successfully")
+    
+    application.post_init = set_commands
+
     # Set up periodic task
     # Use CHECK_INTERVAL for first run to avoid running immediately on startup
     # This prevents duplicate messages when bot restarts

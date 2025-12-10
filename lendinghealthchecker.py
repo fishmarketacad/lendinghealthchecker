@@ -450,10 +450,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Supported Protocols:\n" + protocols_list + "\n\n"
         "Here are the available commands:\n"
         "/start - Show this help message\n"
+        "/add <address> - Add address with default threshold (1.5)\n"
         "/add <address> <threshold> - Set global threshold (monitors all protocols)\n"
         "/add <address> <threshold> <protocol> - Set protocol-specific threshold\n"
         "/add <address> <threshold> <protocol> <market> - Set market-specific threshold\n"
         "  Examples:\n"
+        "    /add 0x1234...\n"
         "    /add 0x1234... 1.5\n"
         "    /add 0x1234... 1.3 morpho\n"
         "    /add 0x1234... 1.2 morpho 0xMarketID\n"
@@ -632,7 +634,7 @@ async def list_addresses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         await update.message.reply_text(
             "You are not currently monitoring any addresses.\n"
-            "Use /add <address> <threshold> to start monitoring."
+            "Use /add <address> to start monitoring (default threshold: 1.5)."
         )
         return
 
@@ -1448,7 +1450,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             f"[Instance: {INSTANCE_ID[:8]}]\n"
             "You are not currently monitoring any addresses.\n"
-            "Use /add <address> <threshold> to start monitoring."
+            "Use /add <address> to start monitoring (default threshold: 1.5)."
         )
         return
     
@@ -1539,7 +1541,7 @@ async def position(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         await update.message.reply_text(
             "You are not currently monitoring any addresses.\n"
-            "Use /add <address> <threshold> to start monitoring."
+            "Use /add <address> to start monitoring (default threshold: 1.5)."
         )
         return
     
@@ -1628,7 +1630,7 @@ async def repay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if chat_id not in user_data or not user_data[chat_id].get('addresses'):
         await update.message.reply_text(
             "You are not currently monitoring any addresses.\n"
-            "Use /add <address> <threshold> to start monitoring."
+            "Use /add <address> to start monitoring (default threshold: 1.5)."
         )
         return
     
